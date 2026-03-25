@@ -24,7 +24,7 @@ Regular Git tracks *what* changed. `aigit` tracks **why** it changed and **which
 ### Install
 
 ```bash
-git clone https://github.com/cwoodcox/aigit
+git clone https://github.com/chrisp-coding/aigit
 cd aigit
 cargo install --path .
 ```
