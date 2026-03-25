@@ -1,0 +1,29 @@
+# aigit configuration
+
+[agents.default]
+name = "Default Agent"
+description = "Generic AI assistant"
+config = { allowed_models = ["claude-3.5-sonnet", "gpt-4", "deepseek-chat"] }
+
+[agents.frontend]
+name = "Frontend Specialist"
+description = "Focus on UI, React, CSS"
+config = { allowed_models = ["claude-3.5-sonnet"], temperature = 0.7 }
+
+[agents.backend]
+name = "Backend Specialist"
+description = "Focus on Rust, Python, APIs"
+config = { allowed_models = ["claude-code"], temperature = 0.3 }
+
+[embeddings]
+model = "all-MiniLM-L6-v2"
+cache_dir = ".aigit/cache"
+
+[merge]
+llm_provider = "ollama"  # ollama, openai, anthropic, none
+llm_model = "qwen2.5-coder:7b"
+enabled = true
+
+[git]
+auto_commit = true
+hook_path = ".aigit/hooks"
