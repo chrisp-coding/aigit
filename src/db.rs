@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::{SqliteConnectOptions, SqlitePoolOptions}, FromRow, SqlitePool};
+use sqlx::{sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous}, FromRow, SqlitePool};
+use std::collections::HashMap;
 use std::path::Path;
 use tracing;
 
@@ -15,7 +16,10 @@ impl Database {
         
         let options = SqliteConnectOptions::new()
             .filename(&path_str)
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .pragma("foreign_keys", "ON");
         
         let pool = SqlitePoolOptions::new()
             .connect_with(options)
@@ -62,6 +66,20 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Populate normalized commit_artifacts table
+        for artifact in &commit.artifacts {
+            if artifact.is_empty() {
+                continue;
+            }
+            sqlx::query(
+                r#"INSERT OR IGNORE INTO commit_artifacts (commit_id, artifact_path) VALUES (?, ?)"#,
+            )
+            .bind(&id)
+            .bind(artifact)
+            .execute(&self.pool)
+            .await?;
+        }
+
         Ok(id)
     }
 
@@ -90,6 +108,24 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
         Ok(commit)
+    }
+
+    /// Batch-fetch commits by a set of Git hashes; returns a map of git_hash -> Commit.
+    pub async fn get_commits_by_git_hashes(&self, hashes: &[String]) -> Result<HashMap<String, Commit>> {
+        if hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut qb = sqlx::QueryBuilder::new("SELECT * FROM commits WHERE git_hash IN (");
+        let mut sep = qb.separated(", ");
+        for h in hashes {
+            sep.push_bind(h.as_str());
+        }
+        qb.push(")");
+        let commits = qb.build_query_as::<Commit>().fetch_all(&self.pool).await?;
+        Ok(commits
+            .into_iter()
+            .filter_map(|c| c.git_hash.clone().map(|h| (h, c)))
+            .collect())
     }
 
     /// Get the most recent commit by a specific agent (for parent detection fallback).
@@ -236,11 +272,13 @@ impl Database {
 
     /// Find the most recent aigit commit that touches the given artifact path.
     pub async fn get_latest_commit_for_artifact(&self, path: &str) -> Result<Option<Commit>> {
-        let pattern = format!("%{}%", escape_like(path));
         let commit = sqlx::query_as::<_, Commit>(
-            r#"SELECT * FROM commits WHERE artifacts LIKE ? ESCAPE '\' ORDER BY timestamp DESC LIMIT 1"#
+            r#"SELECT c.* FROM commits c
+               JOIN commit_artifacts ca ON ca.commit_id = c.id
+               WHERE ca.artifact_path = ?
+               ORDER BY c.timestamp DESC LIMIT 1"#,
         )
-        .bind(&pattern)
+        .bind(path)
         .fetch_optional(&self.pool)
         .await?;
         Ok(commit)
@@ -249,14 +287,30 @@ impl Database {
     /// Return all commits that reference the given artifact path, ordered newest first.
     #[allow(dead_code)]
     pub async fn get_commits_for_artifact(&self, path: &str) -> Result<Vec<Commit>> {
-        let pattern = format!("%{}%", escape_like(path));
         let commits = sqlx::query_as::<_, Commit>(
-            r#"SELECT * FROM commits WHERE artifacts LIKE ? ESCAPE '\' ORDER BY timestamp DESC"#,
+            r#"SELECT c.* FROM commits c
+               JOIN commit_artifacts ca ON ca.commit_id = c.id
+               WHERE ca.artifact_path = ?
+               ORDER BY c.timestamp DESC"#,
         )
-        .bind(&pattern)
+        .bind(path)
         .fetch_all(&self.pool)
         .await?;
         Ok(commits)
+    }
+
+    /// Return (artifact_path, agent_id, intent, commit_id) rows for the conflicts command.
+    /// Uses the normalized commit_artifacts table to avoid loading prompt/output columns.
+    pub async fn get_artifact_commit_rows(&self) -> Result<Vec<ArtifactAgentRow>> {
+        let rows = sqlx::query_as::<_, ArtifactAgentRow>(
+            r#"SELECT ca.artifact_path, c.agent_id, c.intent, c.id AS commit_id
+               FROM commit_artifacts ca
+               JOIN commits c ON c.id = ca.commit_id
+               ORDER BY c.timestamp DESC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     // --- Hook helpers ---
@@ -301,7 +355,7 @@ impl Database {
     }
 }
 
-#[derive(Debug, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Commit {
     pub id: String,
     pub git_hash: Option<String>,
@@ -338,6 +392,15 @@ pub struct Branch {
     pub head_commit_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
+pub struct ArtifactAgentRow {
+    pub artifact_path: String,
+    pub agent_id: String,
+    pub intent: Option<String>,
+    pub commit_id: String,
 }
 
 #[derive(Debug)]

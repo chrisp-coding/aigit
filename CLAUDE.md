@@ -27,6 +27,7 @@
 - ✅ Git integration (`git2`) – fully implemented: `get_current_hash`, `get_repo_root`, `get_parent_hash`, `get_parent_timestamp`, `get_head_commit_message`, `get_commits_for_file`, `get_modified_files`, `get_file_blame`; db also exposes `get_commits_with_git_hash_since` for hook timing fix
 - ✅ Unit tests in `db.rs` (13 tests covering CRUD, filtering, hash lookup, agents)
 - ✅ Integration tests in `tests/integration.rs` (init, commit, log, show, diff, merge, agents, context, blame)
+- ✅ Database optimizations – WAL mode, `synchronous=NORMAL`, `foreign_keys=ON` set on every connection; `commit_artifacts` normalized table with indexed lookups; partial index on `git_hash`; composite index on `(agent_id, timestamp DESC)`; index on `branches(agent_id)`; `Commit` struct derives `Clone`; new `get_commits_by_git_hashes` batch method; new `get_artifact_commit_rows` / `ArtifactAgentRow` for targeted conflict queries; N+1 queries eliminated in `blame`, `context`, and `conflicts`
 
 **Partially implemented / stubbed** (Phase 3–4):
 - 🔄 Semantic diffing – `--semantic` flag prints a warning and falls back to textual diff; embeddings table exists but is never populated (full implementation requires Phase 4 embeddings model)
@@ -78,22 +79,28 @@ aigit/
 ├── tests/
 │   └── integration.rs     # Integration tests for all major commands
 ├── migrations/
-│   └── 20260318000000_init.sql  # SQLite schema (commits, embeddings, agents, branches)
+│   ├── 20260318000000_init.sql  # SQLite schema (commits, embeddings, agents, branches)
+│   └── 20260318000001_optimizations.sql  # commit_artifacts table, indexes, backfill
 └── target/                # Build output
 ```
 
 ## Database Schema
-See `migrations/20260318000000_init.sql` for full DDL. Core tables:
+See `migrations/` for full DDL. Core tables:
 
 **commits** – each AI‑generated commit:
 - `id` (UUID v7), `agent_id`, `intent`, `prompt`, `model`, `parameters` (JSON)
-- `output`, `output_hash` (SHA‑256), `artifacts` (JSON paths)
+- `output`, `output_hash` (SHA‑256), `artifacts` (JSON paths — kept for compatibility)
 - `timestamp` (Unix ms), `parent_ids` (JSON array), `git_hash` (optional Git link)
 - `created_at` (Unix ms, auto)
+- Indexes: partial on `git_hash WHERE git_hash IS NOT NULL`; composite on `(agent_id, timestamp DESC)`
+
+**commit_artifacts** – normalized artifact paths for indexed lookups (added in migration `20260318000001`):
+- `commit_id` (TEXT REFERENCES commits(id)), `artifact_path` (TEXT)
+- Index on `artifact_path`; backfilled from existing JSON `artifacts` column on migration
 
 **embeddings** – vector embeddings of prompt/output (for semantic search, not yet populated)
 **agents** – registered agent profiles (agent_id, name, description, config JSON)
-**branches** – agent‑specific branches (name + agent_id composite PK, head_commit_id, intent)
+**branches** – agent‑specific branches (name + agent_id composite PK, head_commit_id, intent); index on `agent_id`
 
 ## How to Build & Run
 ### Prerequisites
@@ -190,9 +197,11 @@ cargo run -- hook list                    # list installed hooks
 - **JSON fields**: `parameters`, `artifacts`, `parent_ids` stored as JSON text in SQLite.
 - **Embeddings**: Table exists but is never populated (Phase 4).
 - **Git integration**: `git_hash` column links to Git commits; post‑commit hook retrospectively links aigit commits created since the previous Git commit — both NULL-hash commits and commits pre-linked to the old parent hash (the timing fix for `aigit commit` running before `git commit`).
-- **Artifact field**: Populated from the `--output` file path. One artifact per commit (the output file). Richer extraction (e.g., multiple files) is Phase 3.
+- **Artifact field**: Populated from the `--output` file path. `insert_commit` writes to both the legacy JSON `artifacts` column and the normalized `commit_artifacts` table. Artifact lookups (`get_latest_commit_for_artifact`, `get_commits_for_artifact`) use `JOIN commit_artifacts` with an index rather than `LIKE %path%`.
 - **Parent detection**: Tries Git parent commit hash first; falls back to most recent aigit commit by the same agent.
 - **Stdin rules**: If `--prompt` is omitted, prompt is read from stdin and `--output` must be a file. If `--prompt` is provided, output can also come from stdin.
+- **SQLite pragmas**: `Database::connect` sets WAL journal mode, `synchronous=NORMAL`, and `foreign_keys=ON` on every connection — do not skip these when writing tests that open the database directly.
+- **Batch git-hash lookup**: Use `get_commits_by_git_hashes(&[String])` instead of calling `get_commit_by_git_hash` in a loop; the former uses a single `IN (...)` query.
 
 ## Testing with MiroFish Simulation
 We plan to reuse the MiroFish container (already running) to simulate multi‑agent collaboration:
