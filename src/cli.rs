@@ -663,7 +663,17 @@ pub async fn merge(args: MergeArgs, base: &std::path::Path) -> Result<()> {
         match llm_config {
             Ok(cfg) => {
                 let prompt = format!(
-                    "You are a code merge assistant. Two AI agents edited the same content with different intents.\n                     Agent A ({}): intent=\"{}\"\n                     === Agent A output ===\n                     {}\n                     === Agent B output ===\n                     Agent B ({}): intent=\"{}\"\n                     {}\n                     ===\n                     Produce a single merged version that satisfies both intents.                      Output only the merged content with no explanation, preamble, or markdown fences.",
+"You are a code merge assistant. Two AI agents edited the same content with different intents.
+
+Agent A ({}): intent=\"{}\"
+=== Agent A output ===
+{}
+=== Agent B output ===
+Agent B ({}): intent=\"{}\"
+{}
+===
+Produce a single merged version that satisfies both intents. \
+Output only the merged content with no explanation, preamble, or markdown fences.",
                     source.agent_id,
                     source.intent.as_deref().unwrap_or("none"),
                     source.output,
@@ -1537,15 +1547,19 @@ pub async fn resolve(args: ResolveArgs, base: &std::path::Path) -> Result<()> {
     let db_path = aigit_dir.join("db.sqlite");
     let db = db::Database::connect(db_path).await?;
 
-    // Find the two most recent commits from distinct agents for this file
+    // Find the two most recent commits from distinct agents for this file.
+    // Rows are already ordered by timestamp DESC, so first entry per agent is most recent.
     let rows = db.get_artifact_commit_rows().await?;
-    let mut agent_commits: HashMap<String, String> = HashMap::new(); // agent_id -> commit_id
+    // agent_id -> (commit_id, timestamp)
+    let mut agent_commits: HashMap<String, (String, i64)> = HashMap::new();
 
     for row in &rows {
         if row.artifact_path != args.path {
             continue;
         }
-        agent_commits.entry(row.agent_id.clone()).or_insert(row.commit_id.clone());
+        agent_commits
+            .entry(row.agent_id.clone())
+            .or_insert_with(|| (row.commit_id.clone(), row.timestamp));
         if agent_commits.len() >= 2 {
             break;
         }
@@ -1558,13 +1572,77 @@ pub async fn resolve(args: ResolveArgs, base: &std::path::Path) -> Result<()> {
         );
     }
 
-    // Sort by agent_id for deterministic source/target assignment
-    let mut agent_list: Vec<(String, String)> = agent_commits.into_iter().collect();
-    agent_list.sort_by(|a, b| a.0.cmp(&b.0));
+    // Sort by timestamp descending: most recent commit = source, older = target.
+    let mut agent_list: Vec<(String, String, i64)> = agent_commits
+        .into_iter()
+        .map(|(agent, (commit_id, ts))| (agent, commit_id, ts))
+        .collect();
+    agent_list.sort_by(|a, b| b.2.cmp(&a.2));
+
+    let source_id = agent_list[0].1.clone();
+    let target_id = agent_list[1].1.clone();
+
+    if args.llm {
+        let source = db.get_commit_by_prefix(&source_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Source commit not found: {}", source_id))?;
+        let target = db.get_commit_by_prefix(&target_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Target commit not found: {}", target_id))?;
+
+        let llm_config = crate::llm::load_llm_config(&aigit_dir)?;
+
+        let prompt = format!(
+"You are a code merge assistant. Two AI agents edited the same content with different intents.
+
+Agent A ({}): intent=\"{}\"
+=== Agent A output ===
+{}
+=== Agent B output ===
+Agent B ({}): intent=\"{}\"
+{}
+===
+Produce a single merged version that satisfies both intents. \
+Output only the merged content with no explanation, preamble, or markdown fences.",
+            source.agent_id,
+            source.intent.as_deref().unwrap_or("none"),
+            source.output,
+            target.agent_id,
+            target.intent.as_deref().unwrap_or("none"),
+            target.output,
+        );
+
+        let result = crate::llm::call_llm(&llm_config, &prompt).await?;
+
+        let artifact_path = args.output.clone().unwrap_or_else(|| args.path.clone());
+        if args.output.is_some() {
+            std::fs::write(&artifact_path, &result)
+                .map_err(|e| anyhow::anyhow!("Failed to write merge output to '{}': {}", artifact_path, e))?;
+            println!("LLM merge result written to: {}", artifact_path);
+        } else {
+            println!("{}", result);
+        }
+
+        // Record the resolution as a new aigit commit so log/blame/conflicts stay complete.
+        let new_id = db.insert_commit(db::NewCommit {
+            git_hash: None,
+            agent_id: "aigit-resolver".to_string(),
+            intent: Some("LLM-assisted merge of conflicting agent outputs".to_string()),
+            prompt,
+            model: llm_config.model.clone(),
+            parameters: "{}".to_string(),
+            output: result,
+            artifacts: vec![artifact_path],
+            parent_ids: vec![source_id, target_id],
+        }).await?;
+        println!("Resolution recorded: aigit commit {}", &new_id[..new_id.len().min(12)]);
+
+        return Ok(());
+    }
+
+    // Textual fallback — delegate to merge (no auto-commit; conflict markers still present).
     merge(MergeArgs {
-        source: agent_list[0].1.clone(),
-        target: agent_list[1].1.clone(),
-        llm: args.llm,
+        source: source_id,
+        target: target_id,
+        llm: false,
         output: args.output,
         quiet: false,
     }, base).await

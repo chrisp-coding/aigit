@@ -301,7 +301,7 @@ impl Database {
     /// Uses the normalized commit_artifacts table to avoid loading prompt/output columns.
     pub async fn get_artifact_commit_rows(&self) -> Result<Vec<ArtifactAgentRow>> {
         let rows = sqlx::query_as::<_, ArtifactAgentRow>(
-            r#"SELECT ca.artifact_path, c.agent_id, c.intent, c.id AS commit_id
+            r#"SELECT ca.artifact_path, c.agent_id, c.intent, c.id AS commit_id, c.timestamp
                FROM commit_artifacts ca
                JOIN commits c ON c.id = ca.commit_id
                ORDER BY c.timestamp DESC"#,
@@ -399,6 +399,7 @@ pub struct ArtifactAgentRow {
     pub agent_id: String,
     pub intent: Option<String>,
     pub commit_id: String,
+    pub timestamp: i64,
 }
 
 #[derive(Debug)]
