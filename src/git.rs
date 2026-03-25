@@ -10,16 +10,16 @@ pub struct BlameEntry {
     pub timestamp: i64,
 }
 
-fn open_repo() -> Result<Option<git2::Repository>> {
-    match git2::Repository::discover(".") {
+fn open_repo(base: &Path) -> Result<Option<git2::Repository>> {
+    match git2::Repository::discover(base) {
         Ok(repo) => Ok(Some(repo)),
         Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
         Err(e) => Err(e).context("failed to open Git repository"),
     }
 }
 
-pub fn get_current_hash() -> Result<Option<String>> {
-    let repo = match open_repo()? {
+pub fn get_current_hash(base: &Path) -> Result<Option<String>> {
+    let repo = match open_repo(base)? {
         Some(r) => r,
         None => return Ok(None),
     };
@@ -37,8 +37,8 @@ pub fn get_current_hash() -> Result<Option<String>> {
     Ok(Some(oid.to_string()))
 }
 
-pub fn get_repo_root() -> Result<Option<PathBuf>> {
-    let repo = match open_repo()? {
+pub fn get_repo_root(base: &Path) -> Result<Option<PathBuf>> {
+    let repo = match open_repo(base)? {
         Some(r) => r,
         None => return Ok(None),
     };
@@ -51,8 +51,8 @@ pub fn get_repo_root() -> Result<Option<PathBuf>> {
 }
 
 /// Returns the Git hash of the parent of HEAD (i.e. HEAD~1), if it exists.
-pub fn get_parent_hash() -> Result<Option<String>> {
-    let repo = match open_repo()? {
+pub fn get_parent_hash(base: &Path) -> Result<Option<String>> {
+    let repo = match open_repo(base)? {
         Some(r) => r,
         None => return Ok(None),
     };
@@ -76,8 +76,8 @@ pub fn get_parent_hash() -> Result<Option<String>> {
 
 /// Returns the Unix timestamp (seconds) of the parent of HEAD, if one exists.
 /// Used by the post-commit hook to bound the search window for unlinked aigit commits.
-pub fn get_parent_timestamp() -> Result<Option<i64>> {
-    let repo = match open_repo()? {
+pub fn get_parent_timestamp(base: &Path) -> Result<Option<i64>> {
+    let repo = match open_repo(base)? {
         Some(r) => r,
         None => return Ok(None),
     };
@@ -98,8 +98,8 @@ pub fn get_parent_timestamp() -> Result<Option<i64>> {
 }
 
 /// Returns the commit message of HEAD, if available.
-pub fn get_head_commit_message() -> Result<Option<String>> {
-    let repo = match open_repo()? {
+pub fn get_head_commit_message(base: &Path) -> Result<Option<String>> {
+    let repo = match open_repo(base)? {
         Some(r) => r,
         None => return Ok(None),
     };
@@ -115,8 +115,8 @@ pub fn get_head_commit_message() -> Result<Option<String>> {
 }
 
 /// Returns the list of Git commit hashes that modified a given file, newest first.
-pub fn get_commits_for_file(path: &Path) -> Result<Vec<String>> {
-    let repo = match open_repo()? {
+pub fn get_commits_for_file(base: &Path, path: &Path) -> Result<Vec<String>> {
+    let repo = match open_repo(base)? {
         Some(r) => r,
         None => return Ok(vec![]),
     };
@@ -170,8 +170,8 @@ pub fn get_commits_for_file(path: &Path) -> Result<Vec<String>> {
 }
 
 /// Returns paths of files that are modified in the working tree or index relative to HEAD.
-pub fn get_modified_files() -> Result<Vec<String>> {
-    let repo = match open_repo()? {
+pub fn get_modified_files(base: &Path) -> Result<Vec<String>> {
+    let repo = match open_repo(base)? {
         Some(r) => r,
         None => return Ok(vec![]),
     };
@@ -205,8 +205,8 @@ pub fn get_modified_files() -> Result<Vec<String>> {
     Ok(result)
 }
 
-pub fn get_file_blame(path: &Path) -> Result<Vec<BlameEntry>> {
-    let repo = match open_repo()? {
+pub fn get_file_blame(base: &Path, path: &Path) -> Result<Vec<BlameEntry>> {
+    let repo = match open_repo(base)? {
         Some(r) => r,
         None => return Ok(vec![]),
     };

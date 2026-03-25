@@ -106,11 +106,35 @@ tests/
 
 ### Commit message style
 
+Use [Conventional Commits](https://www.conventionalcommits.org/):
+
 ```
-Short imperative summary (50 chars max)
+<type>: short imperative summary (50 chars max after prefix)
 
 Optional longer explanation of why this change is needed.
 Reference relevant issues or context.
+```
+
+**Types:**
+- `feat:` — new feature (bumps minor version)
+- `fix:` — bug fix (bumps patch version)
+- `chore:` — dependency updates, CI changes, tooling
+- `docs:` — documentation only
+- `refactor:` — code change with no behavior change
+- `test:` — adding or fixing tests
+
+**Breaking changes:** append `!` after the type (`feat!:`) or add `BREAKING CHANGE:` in the footer.
+
+**Examples:**
+```
+feat: add merge --llm flag for LLM-assisted conflict resolution
+
+fix: open_repo discovers from base path instead of hardcoded "."
+
+Fixes test isolation issue where git2 would walk up into the project
+repo when tests ran inside it.
+
+chore: add GitHub Actions CI workflow
 ```
 
 ## Reporting Issues

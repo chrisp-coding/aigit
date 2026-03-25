@@ -323,14 +323,14 @@ pub async fn commit(args: CommitArgs, base: &std::path::Path) -> Result<()> {
     // Auto-detect Git hash if not provided
     let git_hash = match args.git_hash {
         Some(h) => Some(h),
-        None => crate::git::get_current_hash().unwrap_or(None),
+        None => crate::git::get_current_hash(base).unwrap_or(None),
     };
 
     // Resolve parent aigit commit: try Git parent first, fall back to last aigit commit by agent
     let parent_ids = {
         let mut ids = vec![];
         let mut found = false;
-        if let Ok(Some(parent_git_hash)) = crate::git::get_parent_hash() {
+        if let Ok(Some(parent_git_hash)) = crate::git::get_parent_hash(base) {
             if let Ok(Some(parent_commit)) = db.get_commit_by_git_hash(&parent_git_hash).await {
                 ids.push(parent_commit.id);
                 found = true;
@@ -501,7 +501,7 @@ pub async fn blame(args: BlameArgs, base: &std::path::Path) -> Result<()> {
     });
 
     // Get Git blame entries
-    let blame_entries = crate::git::get_file_blame(Path::new(&args.file))?;
+    let blame_entries = crate::git::get_file_blame(base, Path::new(&args.file))?;
     
     if blame_entries.is_empty() {
         println!("No Git blame available for file (not tracked or not in Git repo).");
@@ -774,7 +774,7 @@ pub async fn status(_args: StatusArgs, base: &std::path::Path) -> Result<()> {
     println!();
 
     // Get modified files from Git
-    let modified_files = crate::git::get_modified_files()?;
+    let modified_files = crate::git::get_modified_files(base)?;
 
     if modified_files.is_empty() {
         println!("No modified files in Git working tree.");
@@ -827,7 +827,7 @@ pub async fn context(args: ContextArgs, base: &std::path::Path) -> Result<()> {
 
     // Collect aigit commits relevant to the given path (or all recent commits).
     let commits: Vec<db::Commit> = if let Some(ref file_path) = args.path {
-        let git_hashes = crate::git::get_commits_for_file(Path::new(file_path))?;
+        let git_hashes = crate::git::get_commits_for_file(base, Path::new(file_path))?;
 
         let mut matched = vec![];
         // Look up aigit commits by git hash
@@ -1003,7 +1003,7 @@ pub async fn hook(sub: HookCommands, base: &std::path::Path) -> Result<()> {
         HookCommands::Install { git } => {
             if git {
                 // Install into .git/hooks/
-                let repo_root = match crate::git::get_repo_root()? {
+                let repo_root = match crate::git::get_repo_root(base)? {
                     Some(root) => root,
                     None => anyhow::bail!("Not in a Git repository. Run 'git init' first."),
                 };
@@ -1065,7 +1065,7 @@ echo "aigit hook: tracking Git commit"
         HookCommands::Uninstall { git } => {
             if git {
                 // Remove from .git/hooks/
-                let repo_root = match crate::git::get_repo_root()? {
+                let repo_root = match crate::git::get_repo_root(base)? {
                     Some(root) => root,
                     None => anyhow::bail!("Not in a Git repository."),
                 };
@@ -1112,7 +1112,7 @@ echo "aigit hook: tracking Git commit"
                     // get_parent_timestamp() reads HEAD~1 of the current HEAD (which is the
                     // just-made git commit), so it returns the timestamp of the commit that was
                     // HEAD *before* the git commit ran — exactly bounding our search window.
-                    let since_ms = crate::git::get_parent_timestamp()?
+                    let since_ms = crate::git::get_parent_timestamp(base)?
                         .unwrap_or(0) * 1000;
 
                     // Case 1: aigit commits stored with git_hash IS NULL (prompt was captured
@@ -1123,7 +1123,7 @@ echo "aigit hook: tracking Git commit"
                     //         This happens when `aigit commit` runs before `git commit`: it
                     //         captures get_current_hash() which is the *pre-commit* HEAD, not
                     //         the new commit hash.  We must update those too.
-                    let old_parent_hash = crate::git::get_parent_hash()?;
+                    let old_parent_hash = crate::git::get_parent_hash(base)?;
                     if let Some(ref old_hash) = old_parent_hash {
                         let pre_linked = db
                             .get_commits_with_git_hash_since(old_hash, since_ms)
@@ -1146,7 +1146,7 @@ echo "aigit hook: tracking Git commit"
                             unlinked.len(), &git_hash[..git_hash.len().min(12)]);
                     } else {
                         // Fallback: record the git commit message as a new aigit commit
-                        let msg = crate::git::get_head_commit_message()?.unwrap_or_default();
+                        let msg = crate::git::get_head_commit_message(base)?.unwrap_or_default();
                         let new_commit = db::NewCommit {
                             git_hash: Some(git_hash.clone()),
                             agent_id: "git-hook".to_string(),
@@ -1190,7 +1190,7 @@ echo "aigit hook: tracking Git commit"
             // The hook script written by `hook install --git` contains the signature
             // string "hook run post-commit" which is unique to aigit.
             const AIGIT_HOOK_SIGNATURE: &str = "hook run post-commit";
-            if let Some(repo_root) = crate::git::get_repo_root()? {
+            if let Some(repo_root) = crate::git::get_repo_root(base)? {
                 let git_hook_path = repo_root.join(".git").join("hooks").join("post-commit");
                 if git_hook_path.exists() {
                     let contents = fs::read_to_string(&git_hook_path).unwrap_or_default();
