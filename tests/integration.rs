@@ -1,6 +1,6 @@
 use aigit::cli::{
-    AgentCommands, BlameArgs, CommitArgs, ConflictsArgs, ContextArgs, DiffArgs, LogArgs,
-    MergeArgs, ShowArgs,
+    AgentCommands, BlameArgs, CommitArgs, ConflictsArgs, ContextArgs, DiffArgs, LogArgs, MergeArgs,
+    ShowArgs,
 };
 use tempfile::tempdir;
 
@@ -47,7 +47,10 @@ async fn test_init_twice_errors() {
     aigit::cli::init(dir.path()).await.unwrap();
     let result = aigit::cli::init(dir.path()).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("already initialized"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("already initialized"));
 }
 
 // ── commit ────────────────────────────────────────────────────────────────────
@@ -76,27 +79,52 @@ async fn test_commit_without_init_errors() {
 async fn test_log_empty_repo() {
     let dir = init_repo().await;
     // Should succeed with "No commits found." message, not error.
-    aigit::cli::log(LogArgs { agent: None, limit: 20, since: None }, dir.path())
-        .await
-        .unwrap();
+    aigit::cli::log(
+        LogArgs {
+            agent: None,
+            limit: 20,
+            since: None,
+        },
+        dir.path(),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn test_log_after_commit() {
     let dir = init_repo().await;
     let out = write_output(dir.path(), "out.txt", "o");
-    aigit::cli::commit(commit_args("agent-a", "p", &out), dir.path()).await.unwrap();
-    aigit::cli::commit(commit_args("agent-b", "p", &out), dir.path()).await.unwrap();
+    aigit::cli::commit(commit_args("agent-a", "p", &out), dir.path())
+        .await
+        .unwrap();
+    aigit::cli::commit(commit_args("agent-b", "p", &out), dir.path())
+        .await
+        .unwrap();
 
     // No filter — expect both
-    aigit::cli::log(LogArgs { agent: None, limit: 20, since: None }, dir.path())
-        .await
-        .unwrap();
+    aigit::cli::log(
+        LogArgs {
+            agent: None,
+            limit: 20,
+            since: None,
+        },
+        dir.path(),
+    )
+    .await
+    .unwrap();
 
     // Agent filter
-    aigit::cli::log(LogArgs { agent: Some("agent-a".into()), limit: 20, since: None }, dir.path())
-        .await
-        .unwrap();
+    aigit::cli::log(
+        LogArgs {
+            agent: Some("agent-a".into()),
+            limit: 20,
+            since: None,
+        },
+        dir.path(),
+    )
+    .await
+    .unwrap();
 }
 
 // ── show ──────────────────────────────────────────────────────────────────────
@@ -116,15 +144,26 @@ async fn test_show_existing_commit() {
     let commits = db.list_commits(None, 1, None).await.unwrap();
     let id = &commits[0].id;
 
-    aigit::cli::show(ShowArgs { id: id[..8].to_string() }, dir.path())
-        .await
-        .unwrap();
+    aigit::cli::show(
+        ShowArgs {
+            id: id[..8].to_string(),
+        },
+        dir.path(),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn test_show_missing_commit_errors() {
     let dir = init_repo().await;
-    let result = aigit::cli::show(ShowArgs { id: "deadbeef".to_string() }, dir.path()).await;
+    let result = aigit::cli::show(
+        ShowArgs {
+            id: "deadbeef".to_string(),
+        },
+        dir.path(),
+    )
+    .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -169,7 +208,11 @@ async fn test_diff_two_commits() {
         .unwrap();
 
     aigit::cli::diff(
-        DiffArgs { commit1: id1.clone(), commit2: id2.clone(), semantic: false },
+        DiffArgs {
+            commit1: id1.clone(),
+            commit2: id2.clone(),
+            semantic: false,
+        },
         dir.path(),
     )
     .await
@@ -183,8 +226,12 @@ async fn test_merge_two_commits() {
     let dir = init_repo().await;
     let out_a = write_output(dir.path(), "out_a.txt", "alpha content\n");
     let out_b = write_output(dir.path(), "out_b.txt", "beta content\n");
-    aigit::cli::commit(commit_args("agent-a", "p", &out_a), dir.path()).await.unwrap();
-    aigit::cli::commit(commit_args("agent-b", "p", &out_b), dir.path()).await.unwrap();
+    aigit::cli::commit(commit_args("agent-a", "p", &out_a), dir.path())
+        .await
+        .unwrap();
+    aigit::cli::commit(commit_args("agent-b", "p", &out_b), dir.path())
+        .await
+        .unwrap();
 
     let db = aigit::db::Database::connect(dir.path().join(".aigit/db.sqlite"))
         .await
@@ -194,7 +241,13 @@ async fn test_merge_two_commits() {
     let id2 = commits[0].id.clone();
 
     aigit::cli::merge(
-        MergeArgs { source: id1, target: id2, llm: false, output: None, quiet: false },
+        MergeArgs {
+            source: id1,
+            target: id2,
+            llm: false,
+            output: None,
+            quiet: false,
+        },
         dir.path(),
     )
     .await
@@ -206,7 +259,9 @@ async fn test_merge_two_commits() {
 #[tokio::test]
 async fn test_agents_list_empty() {
     let dir = init_repo().await;
-    aigit::cli::agents(AgentCommands::List, dir.path()).await.unwrap();
+    aigit::cli::agents(AgentCommands::List, dir.path())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -224,7 +279,9 @@ async fn test_agents_add_and_list() {
     .await
     .unwrap();
 
-    aigit::cli::agents(AgentCommands::List, dir.path()).await.unwrap();
+    aigit::cli::agents(AgentCommands::List, dir.path())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -248,19 +305,35 @@ async fn test_agents_add_invalid_json_errors() {
 #[tokio::test]
 async fn test_context_no_commits() {
     let dir = init_repo().await;
-    aigit::cli::context(ContextArgs { path: None, limit: 10, json: false }, dir.path())
-        .await
-        .unwrap();
+    aigit::cli::context(
+        ContextArgs {
+            path: None,
+            limit: 10,
+            json: false,
+        },
+        dir.path(),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn test_context_json_output() {
     let dir = init_repo().await;
     let out = write_output(dir.path(), "out.txt", "output");
-    aigit::cli::commit(commit_args("agent-a", "prompt", &out), dir.path()).await.unwrap();
-    aigit::cli::context(ContextArgs { path: None, limit: 10, json: true }, dir.path())
+    aigit::cli::commit(commit_args("agent-a", "prompt", &out), dir.path())
         .await
         .unwrap();
+    aigit::cli::context(
+        ContextArgs {
+            path: None,
+            limit: 10,
+            json: true,
+        },
+        dir.path(),
+    )
+    .await
+    .unwrap();
 }
 
 // ── blame ─────────────────────────────────────────────────────────────────────
@@ -273,7 +346,10 @@ async fn test_blame_non_tracked_file() {
     std::fs::write(&file, "fn main() {}\n").unwrap();
 
     aigit::cli::blame(
-        BlameArgs { file: file.to_string_lossy().to_string(), lines: None },
+        BlameArgs {
+            file: file.to_string_lossy().to_string(),
+            lines: None,
+        },
         dir.path(),
     )
     .await
@@ -321,7 +397,11 @@ async fn test_diff_semantic_falls_back_gracefully() {
 
     // --semantic should warn but not error out
     aigit::cli::diff(
-        DiffArgs { commit1: id1, commit2: id2, semantic: true },
+        DiffArgs {
+            commit1: id1,
+            commit2: id2,
+            semantic: true,
+        },
         dir.path(),
     )
     .await
@@ -335,8 +415,12 @@ async fn test_merge_output_to_file() {
     let dir = init_repo().await;
     let out_a = write_output(dir.path(), "out_a.txt", "alpha content\n");
     let out_b = write_output(dir.path(), "out_b.txt", "beta content\n");
-    aigit::cli::commit(commit_args("agent-a", "p", &out_a), dir.path()).await.unwrap();
-    aigit::cli::commit(commit_args("agent-b", "p", &out_b), dir.path()).await.unwrap();
+    aigit::cli::commit(commit_args("agent-a", "p", &out_a), dir.path())
+        .await
+        .unwrap();
+    aigit::cli::commit(commit_args("agent-b", "p", &out_b), dir.path())
+        .await
+        .unwrap();
 
     let db = aigit::db::Database::connect(dir.path().join(".aigit/db.sqlite"))
         .await
@@ -359,9 +443,15 @@ async fn test_merge_output_to_file() {
     .await
     .unwrap();
 
-    assert!(merge_out.exists(), "merge output file should have been created");
+    assert!(
+        merge_out.exists(),
+        "merge output file should have been created"
+    );
     let contents = std::fs::read_to_string(&merge_out).unwrap();
-    assert!(!contents.is_empty(), "merge output file should not be empty");
+    assert!(
+        !contents.is_empty(),
+        "merge output file should not be empty"
+    );
 }
 
 // ── conflicts command (Fix 5) ─────────────────────────────────────────────────
@@ -400,9 +490,12 @@ async fn test_conflicts_two_agents_detected() {
     aigit::cli::commit(commit_args("agent-a", "initial impl", &shared), dir.path())
         .await
         .unwrap();
-    aigit::cli::commit(commit_args("agent-b", "alternative impl", &shared), dir.path())
-        .await
-        .unwrap();
+    aigit::cli::commit(
+        commit_args("agent-b", "alternative impl", &shared),
+        dir.path(),
+    )
+    .await
+    .unwrap();
 
     // Should detect a conflict on shared.rs — the function should succeed
     // and report the conflict (output goes to stdout; we just verify no error).
