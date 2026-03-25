@@ -1,6 +1,9 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous}, FromRow, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+    FromRow, SqlitePool,
+};
 use std::collections::HashMap;
 use std::path::Path;
 pub struct Database {
@@ -11,17 +14,15 @@ impl Database {
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
         let path_str = path.as_ref().display().to_string();
         tracing::debug!("Connecting to database at {}", path_str);
-        
+
         let options = SqliteConnectOptions::new()
             .filename(&path_str)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
             .pragma("foreign_keys", "ON");
-        
-        let pool = SqlitePoolOptions::new()
-            .connect_with(options)
-            .await?;
+
+        let pool = SqlitePoolOptions::new().connect_with(options).await?;
         tracing::debug!("Database connection established");
         Ok(Self { pool })
     }
@@ -85,7 +86,7 @@ impl Database {
     pub async fn get_commit_by_prefix(&self, prefix: &str) -> Result<Option<Commit>> {
         let pattern = format!("{}%", escape_like(prefix));
         let mut rows = sqlx::query_as::<_, Commit>(
-            r#"SELECT * FROM commits WHERE id LIKE ? ESCAPE '\' LIMIT 2"#
+            r#"SELECT * FROM commits WHERE id LIKE ? ESCAPE '\' LIMIT 2"#,
         )
         .bind(&pattern)
         .fetch_all(&self.pool)
@@ -93,23 +94,27 @@ impl Database {
         match rows.len() {
             0 => Ok(None),
             1 => Ok(Some(rows.remove(0))),
-            _ => anyhow::bail!("Ambiguous commit prefix '{}': matches multiple commits", prefix),
+            _ => anyhow::bail!(
+                "Ambiguous commit prefix '{}': matches multiple commits",
+                prefix
+            ),
         }
     }
 
     /// Retrieve a commit by Git hash (exact match).
     pub async fn get_commit_by_git_hash(&self, git_hash: &str) -> Result<Option<Commit>> {
-        let commit = sqlx::query_as::<_, Commit>(
-            r#"SELECT * FROM commits WHERE git_hash = ?"#
-        )
-        .bind(git_hash)
-        .fetch_optional(&self.pool)
-        .await?;
+        let commit = sqlx::query_as::<_, Commit>(r#"SELECT * FROM commits WHERE git_hash = ?"#)
+            .bind(git_hash)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(commit)
     }
 
     /// Batch-fetch commits by a set of Git hashes; returns a map of git_hash -> Commit.
-    pub async fn get_commits_by_git_hashes(&self, hashes: &[String]) -> Result<HashMap<String, Commit>> {
+    pub async fn get_commits_by_git_hashes(
+        &self,
+        hashes: &[String],
+    ) -> Result<HashMap<String, Commit>> {
         if hashes.is_empty() {
             return Ok(HashMap::new());
         }
@@ -129,7 +134,7 @@ impl Database {
     /// Get the most recent commit by a specific agent (for parent detection fallback).
     pub async fn get_latest_commit_by_agent(&self, agent_id: &str) -> Result<Option<Commit>> {
         let commit = sqlx::query_as::<_, Commit>(
-            r#"SELECT * FROM commits WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 1"#
+            r#"SELECT * FROM commits WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 1"#,
         )
         .bind(agent_id)
         .fetch_optional(&self.pool)
@@ -175,7 +180,7 @@ impl Database {
             .map_err(|e| anyhow::anyhow!("Invalid JSON config: {}", e))?;
 
         sqlx::query(
-            r#"INSERT INTO agents (agent_id, name, description, config) VALUES (?, ?, ?, ?)"#
+            r#"INSERT INTO agents (agent_id, name, description, config) VALUES (?, ?, ?, ?)"#,
         )
         .bind(agent_id)
         .bind(name)
@@ -188,11 +193,9 @@ impl Database {
 
     /// List all registered agents.
     pub async fn list_agents(&self) -> Result<Vec<Agent>> {
-        let agents = sqlx::query_as::<_, Agent>(
-            r#"SELECT * FROM agents ORDER BY created_at DESC"#
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let agents = sqlx::query_as::<_, Agent>(r#"SELECT * FROM agents ORDER BY created_at DESC"#)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(agents)
     }
 
@@ -207,7 +210,7 @@ impl Database {
         head_commit_id: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
-            r#"INSERT INTO branches (name, agent_id, intent, head_commit_id) VALUES (?, ?, ?, ?)"#
+            r#"INSERT INTO branches (name, agent_id, intent, head_commit_id) VALUES (?, ?, ?, ?)"#,
         )
         .bind(name)
         .bind(agent_id)
@@ -220,18 +223,17 @@ impl Database {
 
     /// List all branches.
     pub async fn list_branches(&self) -> Result<Vec<Branch>> {
-        let branches = sqlx::query_as::<_, Branch>(
-            r#"SELECT * FROM branches ORDER BY created_at DESC"#
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let branches =
+            sqlx::query_as::<_, Branch>(r#"SELECT * FROM branches ORDER BY created_at DESC"#)
+                .fetch_all(&self.pool)
+                .await?;
         Ok(branches)
     }
 
     /// List all branches for a specific agent.
     pub async fn list_branches_for_agent(&self, agent_id: &str) -> Result<Vec<Branch>> {
         let branches = sqlx::query_as::<_, Branch>(
-            r#"SELECT * FROM branches WHERE agent_id = ? ORDER BY created_at DESC"#
+            r#"SELECT * FROM branches WHERE agent_id = ? ORDER BY created_at DESC"#,
         )
         .bind(agent_id)
         .fetch_all(&self.pool)
@@ -241,13 +243,11 @@ impl Database {
 
     /// Delete a branch. Returns true if a row was deleted, false if not found.
     pub async fn delete_branch(&self, name: &str, agent_id: &str) -> Result<bool> {
-        let result = sqlx::query(
-            r#"DELETE FROM branches WHERE name = ? AND agent_id = ?"#
-        )
-        .bind(name)
-        .bind(agent_id)
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query(r#"DELETE FROM branches WHERE name = ? AND agent_id = ?"#)
+            .bind(name)
+            .bind(agent_id)
+            .execute(&self.pool)
+            .await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -416,7 +416,9 @@ pub struct NewCommit {
 }
 
 fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn compute_output_hash(output: &str) -> String {
@@ -434,7 +436,9 @@ mod tests {
 
     async fn setup() -> (Database, tempfile::TempDir) {
         let dir = tempdir().unwrap();
-        let db = Database::connect(dir.path().join("test.sqlite")).await.unwrap();
+        let db = Database::connect(dir.path().join("test.sqlite"))
+            .await
+            .unwrap();
         db.migrate().await.unwrap();
         (db, dir)
     }
@@ -572,8 +576,12 @@ mod tests {
     #[tokio::test]
     async fn test_insert_and_list_agents() {
         let (db, _dir) = setup().await;
-        db.insert_agent("ai-1", "AI Agent One", Some("does stuff"), "{}").await.unwrap();
-        db.insert_agent("ai-2", "AI Agent Two", None, r#"{"key":"val"}"#).await.unwrap();
+        db.insert_agent("ai-1", "AI Agent One", Some("does stuff"), "{}")
+            .await
+            .unwrap();
+        db.insert_agent("ai-2", "AI Agent Two", None, r#"{"key":"val"}"#)
+            .await
+            .unwrap();
 
         let agents = db.list_agents().await.unwrap();
         assert_eq!(agents.len(), 2);
