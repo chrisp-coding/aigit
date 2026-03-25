@@ -326,7 +326,14 @@ pub async fn commit(args: CommitArgs, base: &std::path::Path) -> Result<()> {
         None => crate::git::get_current_hash(base).unwrap_or(None),
     };
 
-    // Resolve parent aigit commit: try Git parent first, fall back to last aigit commit by agent
+    // Resolve parent aigit commit: try Git parent first, fall back to last aigit commit by agent.
+    //
+    // The fallback fires when the Git parent hash exists but has no corresponding aigit commit
+    // (e.g. the repo predates aigit adoption, or the post-commit hook was never run for that
+    // commit). In that case we use the most recent aigit commit by the same agent, which may
+    // not be a true ancestor of the current work. This is a deliberate best-effort choice:
+    // it keeps the DAG connected rather than leaving commits parentless, accepting that the
+    // linkage may be approximate for pre-aigit history.
     let parent_ids = {
         let mut ids = vec![];
         let mut found = false;
@@ -535,7 +542,17 @@ pub async fn blame(args: BlameArgs, base: &std::path::Path) -> Result<()> {
     } else {
         println!("Line | Git Commit          | Aigit Commit (Agent, Intent)");
         println!("{}", "-".repeat(70));
-        
+
+        // Batch-fetch all aigit commits for the unique git hashes in this blame output
+        let unique_hashes: Vec<String> = {
+            let mut seen = std::collections::HashSet::new();
+            blame_entries.iter()
+                .filter(|e| seen.insert(e.commit_hash.clone()))
+                .map(|e| e.commit_hash.clone())
+                .collect()
+        };
+        let aigit_map = db.get_commits_by_git_hashes(&unique_hashes).await?;
+
         for entry in blame_entries {
             // Apply line range filter
             if let Some((filter_start, filter_end)) = line_filter {
@@ -544,8 +561,7 @@ pub async fn blame(args: BlameArgs, base: &std::path::Path) -> Result<()> {
                 }
             }
 
-            // Try to find aigit commit with matching git_hash
-            let aigit_commit = db.get_commit_by_git_hash(&entry.commit_hash).await?;
+            let aigit_commit = aigit_map.get(&entry.commit_hash);
 
             let line_range = if entry.line_start == entry.line_end {
                 format!("{}", entry.line_start)
@@ -829,35 +845,23 @@ pub async fn context(args: ContextArgs, base: &std::path::Path) -> Result<()> {
     let commits: Vec<db::Commit> = if let Some(ref file_path) = args.path {
         let git_hashes = crate::git::get_commits_for_file(base, Path::new(file_path))?;
 
-        let mut matched = vec![];
-        // Look up aigit commits by git hash
+        // Batch-fetch aigit commits for all git hashes, reassemble in order
+        let hash_map = db.get_commits_by_git_hashes(&git_hashes).await?;
+        let mut matched: Vec<db::Commit> = vec![];
         for hash in &git_hashes {
-            if let Some(c) = db.get_commit_by_git_hash(hash).await? {
-                matched.push(c);
+            if let Some(c) = hash_map.get(hash) {
+                matched.push(c.clone());
                 if matched.len() >= args.limit as usize {
                     break;
                 }
             }
         }
 
-        // Fallback: artifact search if no git-hash matches found
+        // Fallback: artifact search using indexed commit_artifacts table
         if matched.is_empty() {
-            let all = db.list_commits(None, args.limit, None).await?;
-            for commit in all {
-                if matched.len() >= args.limit as usize {
-                    break;
-                }
-                match serde_json::from_str::<Vec<String>>(&commit.artifacts) {
-                    Ok(artifacts) => {
-                        if artifacts.iter().any(|a| a.contains(file_path.as_str())) {
-                            matched.push(commit);
-                        }
-                    }
-                    Err(_) => {
-                        eprintln!("Warning: commit {} has corrupted artifacts data", &commit.id[..commit.id.len().min(12)]);
-                    }
-                }
-            }
+            let mut all = db.get_commits_for_artifact(file_path).await?;
+            all.truncate(args.limit as usize);
+            matched = all;
         }
 
         matched
@@ -924,8 +928,9 @@ pub async fn conflicts(args: ConflictsArgs, base: &std::path::Path) -> Result<()
     let db_path = aigit_dir.join("db.sqlite");
     let db = db::Database::connect(db_path).await?;
 
-    // Fetch all commits, ordered newest-first, to scan artifact paths.
-    let all_commits = db.list_commits(None, u32::MAX, None).await?;
+    // Fetch (artifact_path, agent_id, intent) rows ordered newest-first.
+    // Uses the normalized commit_artifacts table — does not load prompt/output.
+    let rows = db.get_artifact_commit_rows().await?;
 
     // For each artifact path, track which agents have touched it and their most
     // recent intent.  We respect the --window limit: once we have `window`
@@ -938,32 +943,16 @@ pub async fn conflicts(args: ConflictsArgs, base: &std::path::Path) -> Result<()
     // artifact_path -> total commit count so far (for window enforcement)
     let mut artifact_count: HashMap<String, usize> = HashMap::new();
 
-    for commit in &all_commits {
-        let artifacts: Vec<String> = match serde_json::from_str(&commit.artifacts) {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!(
-                    "Warning: commit {} has corrupted artifacts data",
-                    &commit.id[..commit.id.len().min(12)]
-                );
-                continue;
-            }
-        };
-
-        for artifact in artifacts {
-            if artifact.is_empty() {
-                continue;
-            }
-            let count = artifact_count.entry(artifact.clone()).or_insert(0);
-            if window > 0 && *count >= window {
-                continue;
-            }
-            *count += 1;
-
-            let agents = artifact_agents.entry(artifact.clone()).or_default();
-            // Only record the first (most recent) intent per agent since commits are newest-first.
-            agents.entry(commit.agent_id.clone()).or_insert_with(|| commit.intent.clone());
+    for row in &rows {
+        let count = artifact_count.entry(row.artifact_path.clone()).or_insert(0);
+        if window > 0 && *count >= window {
+            continue;
         }
+        *count += 1;
+
+        let agents = artifact_agents.entry(row.artifact_path.clone()).or_default();
+        // Only record the first (most recent) intent per agent since rows are newest-first.
+        agents.entry(row.agent_id.clone()).or_insert_with(|| row.intent.clone());
     }
 
     // Filter to files where more than one distinct agent has commits.

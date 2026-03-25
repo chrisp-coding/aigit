@@ -1,4 +1,4 @@
-.PHONY: build test run migrate clean
+.PHONY: build test run migrate clean lint fmt fmt-check install
 
 build:
 	cargo build --release
@@ -6,8 +6,17 @@ build:
 test:
 	cargo test
 
-run:
-	cargo run -- $(filter-out $@,$(MAKECMDGOALS))
+lint:
+	cargo clippy -- -D warnings
+
+fmt:
+	cargo fmt
+
+fmt-check:
+	cargo fmt --check
+
+install:
+	cargo install --path .
 
 migrate:
 	sqlx migrate run
@@ -15,6 +24,3 @@ migrate:
 clean:
 	cargo clean
 	rm -f .aigit/db.sqlite
-
-%:
-	@:
