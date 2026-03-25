@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous}, FromRow, SqlitePool};
 use std::collections::HashMap;
 use std::path::Path;
-use tracing;
-
 pub struct Database {
     pool: SqlitePool,
 }

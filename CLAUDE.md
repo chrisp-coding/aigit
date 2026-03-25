@@ -5,7 +5,7 @@
 
 **Core value**: Regular Git tracks *what* changed; aigit tracks **why** it changed (the prompt/intent) and **who** changed it (which agent/persona).
 
-## Current Status (Phase 1 Complete – Phase 3 In Progress)
+## Current Status (Phase 2 Complete – Phase 3 In Progress)
 **Implemented** (Phase 0 and Phase 1):
 - ✅ Project skeleton (`Cargo.toml`, `src/`, `migrations/`, `tests/`)
 - ✅ SQLite schema (see `migrations/`)
@@ -17,9 +17,9 @@
 - ✅ `show` command – displays full commit details (supports prefix matching)
 - ✅ `diff` command – textual diff using `similar` crate; `--semantic` flag prints a warning and falls back to textual diff gracefully (no hard error)
 - ✅ `blame` command – integrates with `git.rs` Git blame; maps Git commit hashes to aigit commits; falls back to artifact search when file is not in a Git repo; `--lines` range filter supported
-- ✅ `merge` command – textual merge with intent‑annotated conflict markers; `--llm` flag acknowledged, falls back to textual merge; `--output <path>` writes result to a file instead of stdout
+- ✅ `merge` command – textual merge with intent‑annotated conflict markers; `--llm` flag now makes real LLM calls via `src/llm.rs`; `--output <path>` writes result to a file instead of stdout
 - ✅ `agents` subcommand – list/add agents (validates JSON config)
-- ✅ `hook` subcommand – install/uninstall/run/list; `--git` flag installs a real `.git/hooks/post-commit` script; `hook run post-commit` does retrospective Git hash linking (covers NULL-hash commits and pre-linked commits with the old parent hash); fallback records Git commit message as aigit commit; `hook list` reports git-installed hooks as `[git] post-commit (aigit-managed)`
+- ✅ `hook` subcommand – install/uninstall/run/list; `--git` flag installs a real `.git/hooks/post-commit` script; `--claude` flag writes `.claude/hooks/aigit-post-tool.sh` and `.claude/hooks/aigit-pre-tool.sh` and patches `.claude/settings.json` with PostToolUse/PreToolUse entries; `hook run post-commit` does retrospective Git hash linking (covers NULL-hash commits and pre-linked commits with the old parent hash); fallback records Git commit message as aigit commit; `hook list` reports git-installed hooks as `[git] post-commit (aigit-managed)` and detects Claude Code hooks in `.claude/settings.json`
 - ✅ `conflicts` command – reports files touched by more than one distinct agent; `--window N` (default 10) limits to the N most recent commits per file; shows each conflicting file, the agents that touched it, and their most recent intents
 - ✅ `context` subcommand – shows recent aigit commits for a file or repo (Git hash lookup with artifact fallback); `--json` for machine consumption
 - ✅ `branch` subcommand – list/create/delete agent‑scoped branches; HEAD advances automatically on each `commit`
@@ -29,15 +29,18 @@
 - ✅ Integration tests in `tests/integration.rs` (init, commit, log, show, diff, merge, agents, context, blame)
 - ✅ Database optimizations – WAL mode, `synchronous=NORMAL`, `foreign_keys=ON` set on every connection; `commit_artifacts` normalized table with indexed lookups; partial index on `git_hash`; composite index on `(agent_id, timestamp DESC)`; index on `branches(agent_id)`; `Commit` struct derives `Clone`; new `get_commits_by_git_hashes` batch method; new `get_artifact_commit_rows` / `ArtifactAgentRow` for targeted conflict queries; N+1 queries eliminated in `blame`, `context`, and `conflicts`
 
-**Partially implemented / stubbed** (Phase 3–4):
-- 🔄 Semantic diffing – `--semantic` flag prints a warning and falls back to textual diff; embeddings table exists but is never populated (full implementation requires Phase 4 embeddings model)
-- 🔄 LLM‑assisted merge – `--llm` flag falls back to textual merge; no LLM calls made
-- 🔄 Claude Code PostToolUse/PreToolUse hooks – not yet written
+**Implemented** (Phase 2):
+- ✅ `conflict-check` command – checks if a file was recently touched by other agents; exits 1 + prints error if conflict detected; `--agent` and `--window N` flags supported
+- ✅ `resolve` command – finds the two most recent conflicting commits for a file and merges them; textual by default, LLM-assisted with `--llm`; `--output <path>` writes result to a file
+- ✅ `mcp` subcommand – starts a stdio JSON-RPC 2.0 MCP server exposing 7 tools (`aigit_log`, `aigit_show`, `aigit_diff`, `aigit_blame`, `aigit_context`, `aigit_conflict_check`, `aigit_merge`); `--install` writes `.mcp.json` for automatic discovery
+- ✅ `src/llm.rs` – LLM config loading and HTTP calls for Anthropic and Ollama; config via `.aigit/config.toml [llm]` section; `ANTHROPIC_API_KEY`, `AIGIT_LLM_PROVIDER`, `AIGIT_LLM_MODEL` env vars override config
+- ✅ `src/mcp.rs` – stdio JSON-RPC 2.0 MCP server implementation
+
+**Partially implemented / stubbed** (Phase 3):
+- 🔄 Semantic diffing – `--semantic` flag prints a warning and falls back to textual diff; embeddings table exists but is never populated (full implementation requires Phase 3 embeddings model)
 
 **Not yet implemented** (Phase 3–4):
 - ❌ Embeddings generation & semantic search
-- ❌ LLM‑assisted conflict resolution (`merge --llm`)
-- ❌ MCP server (`aigit mcp`)
 - ❌ `aigit search` semantic query
 - ❌ `aigit export` command
 
@@ -53,7 +56,7 @@
 2. **Local‑first**: No cloud dependency; optional E2E‑encrypted sync later.
 3. **Git integration**: Separate database with `git_hash` foreign key (not Git notes) to keep workflows intact.
 4. **Embeddings**: Planned use of `all‑MiniLM‑L6‑v2` (80 MB ONNX) for semantic diffing (Phase 4).
-5. **Merge assist**: Will use local Ollama (`qwen2.5‑coder:7b`) or configured API (optional).
+5. **Merge assist**: Implemented in `src/llm.rs` — supports Anthropic API and local Ollama; configured via `.aigit/config.toml [llm]` section or env vars.
 
 ## File Structure
 ```
@@ -72,10 +75,12 @@ aigit/
 ├── setup.sh                # One‑line setup
 ├── src/
 │   ├── main.rs            # CLI entry point, command routing
-│   ├── cli.rs             # Command implementations (init, commit, log, show, diff, blame, merge, agents, hook, context, branch, status, conflicts)
+│   ├── cli.rs             # Command implementations (init, commit, log, show, diff, blame, merge, agents, hook, context, branch, status, conflicts, conflict-check, resolve, mcp)
 │   ├── db.rs              # Database layer (Database struct, Commit/Agent/Branch models, unit tests)
 │   ├── git.rs             # Git integration (get_current_hash, get_repo_root, get_parent_hash, get_parent_timestamp, get_head_commit_message, get_commits_for_file, get_modified_files, get_file_blame)
-│   └── lib.rs             # Re-exports cli, db, git modules (used by integration tests)
+│   ├── llm.rs             # LLM config loading + Anthropic/Ollama HTTP calls
+│   ├── mcp.rs             # stdio JSON-RPC 2.0 MCP server (7 tools)
+│   └── lib.rs             # Re-exports cli, db, git, llm, mcp modules (used by integration tests)
 ├── tests/
 │   └── integration.rs     # Integration tests for all major commands
 ├── migrations/
@@ -171,7 +176,14 @@ cargo run -- branch list                  # list agent-scoped branches
 cargo run -- branch create main --agent claude-code --intent "primary branch"
 cargo run -- status                       # modified files with aigit coverage
 cargo run -- hook install --git           # install .git/hooks/post-commit
-cargo run -- hook list                    # list installed hooks
+cargo run -- hook install --claude        # install Claude Code PostToolUse/PreToolUse hooks
+cargo run -- hook list                    # list installed hooks (git and Claude Code)
+cargo run -- conflict-check src/lib.rs    # check if file has multi-agent conflicts
+cargo run -- conflict-check src/lib.rs --agent claude-code --window 20
+cargo run -- resolve src/lib.rs           # merge the two most recent conflicting commits for a file
+cargo run -- resolve src/lib.rs --llm --output resolved.rs
+cargo run -- mcp                          # start stdio MCP server
+cargo run -- mcp --install                # write .mcp.json for automatic discovery
 ```
 
 ## Development Workflow
@@ -185,10 +197,11 @@ cargo run -- hook list                    # list installed hooks
 4. **Test with actual commits** → use the `commit` command with sample data.
 
 ## Next Immediate Tasks (Phase 3 Priority)
-1. **Claude Code hooks** – write PostToolUse hook that calls `aigit commit` after file writes; write PreToolUse hook that warns when another agent recently touched the target file.
-2. **MCP server** – implement `aigit mcp` subcommand exposing aigit tools over Model Context Protocol.
-3. **`merge --llm`** – implement LLM‑assisted merge via Anthropic API or local Ollama.
-4. **`aigit resolve`** – per‑file LLM merge invocation.
+1. **Embeddings generation** – integrate `all-MiniLM-L6-v2` ONNX model; populate `embeddings` table on each `aigit commit`.
+2. **`diff --semantic`** – implement cosine similarity comparison using populated embeddings.
+3. **`aigit search`** – find commits by semantic similarity to a query string.
+4. **Semantic conflict scoring** – flag conflicts where agent intents are semantically opposed.
+5. **Agent identity convention** – define standard naming for Claude Code sessions (e.g., `claude-code:<task-type>`).
 
 ## Gotchas & Notes
 - **SQLx migrations**: `sqlx migrate run` must be run after `init` (already handled in `cli::init`).
@@ -202,6 +215,10 @@ cargo run -- hook list                    # list installed hooks
 - **Stdin rules**: If `--prompt` is omitted, prompt is read from stdin and `--output` must be a file. If `--prompt` is provided, output can also come from stdin.
 - **SQLite pragmas**: `Database::connect` sets WAL journal mode, `synchronous=NORMAL`, and `foreign_keys=ON` on every connection — do not skip these when writing tests that open the database directly.
 - **Batch git-hash lookup**: Use `get_commits_by_git_hashes(&[String])` instead of calling `get_commit_by_git_hash` in a loop; the former uses a single `IN (...)` query.
+- **LLM config**: `src/llm.rs` reads `.aigit/config.toml` `[llm]` section. Env vars `ANTHROPIC_API_KEY`, `AIGIT_LLM_PROVIDER`, and `AIGIT_LLM_MODEL` override file config. Provider choices: `anthropic` or `ollama` (base URL defaults to `http://localhost:11434`).
+- **MCP server**: `src/mcp.rs` speaks JSON-RPC 2.0 over stdio. The 7 exposed tools are `aigit_log`, `aigit_show`, `aigit_diff`, `aigit_blame`, `aigit_context`, `aigit_conflict_check`, and `aigit_merge`. Run `aigit mcp --install` once to write `.mcp.json` so Claude Code discovers the server automatically.
+- **Claude Code hooks**: `hook install --claude` writes shell scripts to `.claude/hooks/` and patches `.claude/settings.json`. Hook env vars: `AIGIT_AGENT` (default: `claude-code`), `AIGIT_MODEL` (default: `claude-sonnet-4-6`), `AIGIT_INTENT`.
+- **conflict-check exit code**: `aigit conflict-check <file>` exits 0 when clean, 1 when a conflict is detected. The PreToolUse hook relies on this exit code to block or warn.
 
 ## Testing with MiroFish Simulation
 We plan to reuse the MiroFish container (already running) to simulate multi‑agent collaboration:
@@ -214,11 +231,11 @@ This will help refine conflict detection and merge‑assist logic.
 
 ## Open Questions / Decisions Needed
 1. **Embedding model**: `all‑MiniLM‑L6‑v2` (80 MB) vs. something smaller/faster?
-2. **Merge‑assist LLM**: Default to local Ollama (`qwen2.5‑coder:7b`) or allow API (OpenAI/Anthropic)?
+2. **Merge‑assist LLM**: Anthropic API and Ollama are both supported via `src/llm.rs`; open question is whether to add OpenAI as a third provider.
 3. **Git integration depth**: Should aigit commits be stored as Git notes for portability?
-4. **Performance**: SQLite with 10k+ commits; embedding generation async.
+4. **Performance**: SQLite with 10k+ commits — basic indexing and WAL mode are now in place; embedding generation async still needed for Phase 4.
 5. **Artifact extraction**: Richer extraction beyond single `--output` path (Phase 3)?
-6. **MCP transport**: stdio vs. HTTP for `aigit mcp`?
+6. **MCP transport**: Resolved — stdio JSON-RPC 2.0 is implemented. HTTP transport is a possible future addition.
 
 ## Useful Commands for Development
 ```bash
@@ -251,4 +268,4 @@ cargo run -- log
 - **Workspace**: `/home/chris/projects/aigit`
 
 ---
-*Updated: 2026‑03‑24 (Phase 1 complete; Phase 3 in progress — `conflicts` command added, hook timing fixed, merge `--output` added)*
+*Updated: 2026‑03‑25 (Phase 2 complete — `conflict-check`, `resolve`, `mcp` commands added; `hook install --claude` implemented; `merge --llm` now makes real LLM calls via `src/llm.rs`; MCP server in `src/mcp.rs` exposes 7 tools over stdio JSON-RPC 2.0)*

@@ -5,6 +5,8 @@ use std::path::Path;
 mod cli;
 mod db;
 mod git;
+mod llm;
+mod mcp;
 
 #[derive(Parser)]
 #[command(name = "aigit", about = "AI-native version control", version)]
@@ -44,6 +46,12 @@ enum Commands {
     Status(cli::StatusArgs),
     /// Show files where multiple agents have recent commits (potential conflicts)
     Conflicts(cli::ConflictsArgs),
+    /// Check a single file for multi-agent conflicts (exits 1 if conflict found)
+    ConflictCheck(cli::ConflictCheckArgs),
+    /// Resolve conflicts for a file using LLM merge
+    Resolve(cli::ResolveArgs),
+    /// Start the aigit MCP server (stdio JSON-RPC 2.0)
+    Mcp(cli::McpArgs),
 }
 
 #[tokio::main]
@@ -66,5 +74,8 @@ async fn main() -> Result<()> {
         Commands::Branch(sub) => cli::branch(sub, base).await,
         Commands::Status(args) => cli::status(args, base).await,
         Commands::Conflicts(args) => cli::conflicts(args, base).await,
+        Commands::ConflictCheck(args) => cli::conflict_check(args, base).await,
+        Commands::Resolve(args) => cli::resolve(args, base).await,
+        Commands::Mcp(args) => crate::mcp::run(args, base).await,
     }
 }

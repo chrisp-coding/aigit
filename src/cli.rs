@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use serde_json;
 use std::path::Path;
 use crate::db;
 
@@ -99,12 +98,15 @@ pub struct MergeArgs {
     pub source: String,
     /// Target commit (ID or prefix)
     pub target: String,
-    /// Use LLM-assisted merge (Phase 3)
+    /// Use LLM-assisted merge (configured via .aigit/config.toml)
     #[arg(long)]
     pub llm: bool,
     /// Write merge result to this file instead of stdout
     #[arg(long)]
     pub output: Option<String>,
+    /// Suppress progress output (used internally by MCP server)
+    #[arg(skip)]
+    pub quiet: bool,
 }
 
 #[derive(Args)]
@@ -142,17 +144,23 @@ pub enum AgentCommands {
 
 #[derive(Subcommand)]
 pub enum HookCommands {
-    /// Install Git hooks
+    /// Install hooks
     Install {
         /// Install into .git/hooks/ (auto-tracks Git commits)
         #[arg(long)]
         git: bool,
+        /// Install Claude Code PostToolUse/PreToolUse hooks into .claude/
+        #[arg(long)]
+        claude: bool,
     },
-    /// Uninstall Git hooks
+    /// Uninstall hooks
     Uninstall {
         /// Remove from .git/hooks/
         #[arg(long)]
         git: bool,
+        /// Remove Claude Code hooks from .claude/
+        #[arg(long)]
+        claude: bool,
     },
     /// Run a specific hook by name
     Run {
@@ -199,6 +207,37 @@ pub struct ConflictsArgs {
     /// Only consider the last N commits per file (0 = all commits)
     #[arg(long, default_value = "10")]
     pub window: u32,
+}
+
+#[derive(clap::Args)]
+pub struct ConflictCheckArgs {
+    /// File path to check for multi-agent conflicts
+    pub path: String,
+    /// Agent ID to exclude from conflict detection (e.g. the current agent)
+    #[arg(long)]
+    pub agent: Option<String>,
+    /// Only consider the last N commits for this file (0 = all commits)
+    #[arg(long, default_value = "10")]
+    pub window: u32,
+}
+
+#[derive(clap::Args)]
+pub struct ResolveArgs {
+    /// File path to resolve conflicts for
+    pub path: String,
+    /// Write resolved content to this file instead of stdout
+    #[arg(long)]
+    pub output: Option<String>,
+    /// Use LLM-assisted merge (requires .aigit/config.toml [llm] section or ANTHROPIC_API_KEY)
+    #[arg(long)]
+    pub llm: bool,
+}
+
+#[derive(clap::Args)]
+pub struct McpArgs {
+    /// Write .mcp.json registration file to the current directory
+    #[arg(long)]
+    pub install: bool,
 }
 
 pub async fn init(base: &std::path::Path) -> Result<()> {
@@ -612,14 +651,49 @@ pub async fn merge(args: MergeArgs, base: &std::path::Path) -> Result<()> {
     let target_label = format!("{} | {} | intent: \"{}\"",
         &target.id[..target.id.len().min(12)], target.agent_id, target.intent.as_deref().unwrap_or("no intent"));
 
-    println!("Merging {} into {}", &source.id[..source.id.len().min(12)], &target.id[..target.id.len().min(12)]);
-    println!("Source: {}", source_label);
-    println!("Target: {}", target_label);
-    println!();
+    if !args.quiet {
+        println!("Merging {} into {}", &source.id[..source.id.len().min(12)], &target.id[..target.id.len().min(12)]);
+        println!("Source: {}", source_label);
+        println!("Target: {}", target_label);
+        println!();
+    }
 
     if args.llm {
-        println!("LLM‑assisted merge is Phase 3 (not yet implemented).");
-        println!("Falling back to textual merge.");
+        let llm_config = crate::llm::load_llm_config(&aigit_dir);
+        match llm_config {
+            Ok(cfg) => {
+                let prompt = format!(
+                    "You are a code merge assistant. Two AI agents edited the same content with different intents.\n                     Agent A ({}): intent=\"{}\"\n                     === Agent A output ===\n                     {}\n                     === Agent B output ===\n                     Agent B ({}): intent=\"{}\"\n                     {}\n                     ===\n                     Produce a single merged version that satisfies both intents.                      Output only the merged content with no explanation, preamble, or markdown fences.",
+                    source.agent_id,
+                    source.intent.as_deref().unwrap_or("none"),
+                    source.output,
+                    target.agent_id,
+                    target.intent.as_deref().unwrap_or("none"),
+                    target.output,
+                );
+                match crate::llm::call_llm(&cfg, &prompt).await {
+                    Ok(result) => {
+                        if let Some(ref out_path) = args.output {
+                            std::fs::write(out_path, &result).map_err(|e| {
+                                anyhow::anyhow!("Failed to write merge output to '{}': {}", out_path, e)
+                            })?;
+                            if !args.quiet {
+                                println!("LLM merge result written to: {}", out_path);
+                            }
+                        } else {
+                            println!("{}", result);
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("LLM merge failed: {}. Falling back to textual merge.", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("LLM config error: {}. Falling back to textual merge.", e);
+            }
+        }
     }
 
     // Simple textual merge with conflict markers
@@ -670,12 +744,16 @@ pub async fn merge(args: MergeArgs, base: &std::path::Path) -> Result<()> {
     if let Some(ref out_path) = args.output {
         std::fs::write(out_path, &merged)
             .map_err(|e| anyhow::anyhow!("Failed to write merge output to '{}': {}", out_path, e))?;
-        println!("Merge result written to: {}", out_path);
-        println!("Note: This is a basic textual merge. Use --llm for LLM‑assisted merge (Phase 3).");
+        if !args.quiet {
+            println!("Merge result written to: {}", out_path);
+            println!("Note: This is a basic textual merge. Use --llm for LLM-assisted merge.");
+        }
+    } else if args.quiet {
+        print!("{}", merged);
     } else {
         println!("Merge result (with conflict markers):\n");
         println!("{}", merged);
-        println!("\nNote: This is a basic textual merge. Use --llm for LLM‑assisted merge (Phase 3).");
+        println!("\nNote: This is a basic textual merge. Use --llm for LLM-assisted merge.");
     }
 
     Ok(())
@@ -728,7 +806,7 @@ pub async fn branch(sub: BranchCommands, base: &std::path::Path) -> Result<()> {
             if branches.is_empty() {
                 println!("No branches found.");
             } else {
-                println!("{:<20} {:<20} {:<30} {}", "Name", "Agent", "Intent", "Head Commit");
+                println!("{:<20} {:<20} {:<30} Head Commit", "Name", "Agent", "Intent");
                 println!("{}", "─".repeat(80));
                 for b in branches {
                     let intent = b.intent.as_deref().unwrap_or("(none)");
@@ -989,8 +1067,10 @@ pub async fn hook(sub: HookCommands, base: &std::path::Path) -> Result<()> {
     use std::fs;
 
     match sub {
-        HookCommands::Install { git } => {
-            if git {
+        HookCommands::Install { git, claude } => {
+            if claude {
+                hook_install_claude(base)?;
+            } else if git {
                 // Install into .git/hooks/
                 let repo_root = match crate::git::get_repo_root(base)? {
                     Some(root) => root,
@@ -1007,12 +1087,11 @@ set -e
 GIT_HASH=$(git rev-parse HEAD)
 # Find aigit binary: prefer PATH, fall back to cargo run in repo root
 if command -v aigit &>/dev/null; then
-    AIGIT=aigit
+    aigit hook run post-commit --git-hash "$GIT_HASH"
 else
     REPO_ROOT=$(git rev-parse --show-toplevel)
-    AIGIT="cargo run --manifest-path \"$REPO_ROOT/Cargo.toml\" --quiet --"
+    cargo run --manifest-path "$REPO_ROOT/Cargo.toml" --quiet -- hook run post-commit --git-hash "$GIT_HASH"
 fi
-$AIGIT hook run post-commit --git-hash "$GIT_HASH"
 "#;
                 
                 let hook_path = git_hooks_dir.join("post-commit");
@@ -1051,8 +1130,10 @@ echo "aigit hook: tracking Git commit"
                 println!("Note: Full hook automation is Phase 1. Manual integration required.");
             }
         }
-        HookCommands::Uninstall { git } => {
-            if git {
+        HookCommands::Uninstall { git, claude } => {
+            if claude {
+                hook_uninstall_claude(base)?;
+            } else if git {
                 // Remove from .git/hooks/
                 let repo_root = match crate::git::get_repo_root(base)? {
                     Some(root) => root,
@@ -1191,12 +1272,300 @@ echo "aigit hook: tracking Git commit"
                 }
             }
 
+            // Check .claude/settings.json for aigit-managed Claude Code hooks.
+            const CLAUDE_HOOK_SIGNATURE: &str = "aigit-post-tool";
+            let claude_settings_path = base.join(".claude").join("settings.json");
+            if claude_settings_path.exists() {
+                let contents = fs::read_to_string(&claude_settings_path).unwrap_or_default();
+                if contents.contains(CLAUDE_HOOK_SIGNATURE) {
+                    println!("  [claude] PostToolUse/PreToolUse  (aigit-managed)");
+                    println!("  (source: {})", claude_settings_path.display());
+                    found_any = true;
+                }
+            }
+
             if !found_any {
                 println!("No aigit hooks installed.");
                 println!("Run 'aigit hook install --git' to install the Git post-commit hook.");
+                println!("Run 'aigit hook install --claude' to install Claude Code hooks.");
             }
         }
     }
-    
+
     Ok(())
+}
+
+fn hook_install_claude(base: &std::path::Path) -> Result<()> {
+    use std::fs;
+
+    let claude_dir = base.join(".claude");
+    let hooks_dir = claude_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir)?;
+
+    // PostToolUse hook: auto-commits after Write/Edit tool calls
+    let post_tool_content = r#"#!/bin/bash
+# aigit PostToolUse hook — auto-commits AI-generated file writes to aigit
+INPUT=$(cat)
+TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
+[[ "$TOOL" == "Write" || "$TOOL" == "Edit" ]] || exit 0
+FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+[[ -n "$FILE" ]] || exit 0
+AGENT="${AIGIT_AGENT:-claude-code}"
+MODEL="${AIGIT_MODEL:-claude-sonnet-4-6}"
+INTENT="${AIGIT_INTENT:-}"
+# Extract a prompt from the tool event. For Write use file_text; for Edit use new_string.
+# Truncate to 4096 chars to stay within aigit's limits.
+PROMPT=$(echo "$INPUT" | jq -r '
+  if .tool_name == "Write" then .tool_input.file_text // ""
+  elif .tool_name == "Edit" then .tool_input.new_string // ""
+  else "" end' | head -c 4096)
+[[ -n "$PROMPT" ]] || PROMPT="Claude Code ${TOOL}: ${FILE}"
+aigit_commit() {
+    if command -v aigit &>/dev/null; then
+        aigit "$@"
+    else
+        REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+        cargo run --manifest-path "$REPO_ROOT/Cargo.toml" --quiet -- "$@"
+    fi
+}
+if [[ -n "$INTENT" ]]; then
+    aigit_commit commit --agent "$AGENT" --model "$MODEL" --intent "$INTENT" --prompt "$PROMPT" --output "$FILE" 2>/dev/null || true
+else
+    aigit_commit commit --agent "$AGENT" --model "$MODEL" --prompt "$PROMPT" --output "$FILE" 2>/dev/null || true
+fi
+exit 0
+"#;
+
+    // PreToolUse hook: warns when another agent recently touched the target file
+    let pre_tool_content = r#"#!/bin/bash
+# aigit PreToolUse hook — warns when another agent recently touched the target file
+INPUT=$(cat)
+TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
+[[ "$TOOL" == "Write" || "$TOOL" == "Edit" ]] || exit 0
+FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+[[ -n "$FILE" ]] || exit 0
+AGENT="${AIGIT_AGENT:-claude-code}"
+aigit_run() {
+    if command -v aigit &>/dev/null; then
+        aigit "$@"
+    else
+        REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+        cargo run --manifest-path "$REPO_ROOT/Cargo.toml" --quiet -- "$@"
+    fi
+}
+WARNING=$(aigit_run conflict-check "$FILE" --agent "$AGENT" 2>&1)
+if [[ $? -ne 0 && -n "$WARNING" ]]; then
+    echo "aigit conflict warning: $WARNING" >&2
+fi
+exit 0
+"#;
+
+    let post_tool_path = hooks_dir.join("aigit-post-tool.sh");
+    let pre_tool_path = hooks_dir.join("aigit-pre-tool.sh");
+    fs::write(&post_tool_path, post_tool_content)?;
+    fs::write(&pre_tool_path, pre_tool_content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&post_tool_path, fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(&pre_tool_path, fs::Permissions::from_mode(0o755))?;
+    }
+    println!("Created: {}", post_tool_path.display());
+    println!("Created: {}", pre_tool_path.display());
+
+    // Patch .claude/settings.json to register the hooks
+    let settings_path = claude_dir.join("settings.json");
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let contents = fs::read_to_string(&settings_path)?;
+        serde_json::from_str(&contents).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let hooks_obj = settings
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("settings.json root is not an object"))?
+        .entry("hooks")
+        .or_insert(serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("hooks is not an object"))?;
+
+    let post_hook_entry = serde_json::json!({
+        "matcher": "Write|Edit",
+        "hooks": [{
+            "type": "command",
+            "command": ".claude/hooks/aigit-post-tool.sh"
+        }]
+    });
+    let pre_hook_entry = serde_json::json!({
+        "matcher": "Write|Edit",
+        "hooks": [{
+            "type": "command",
+            "command": ".claude/hooks/aigit-pre-tool.sh"
+        }]
+    });
+
+    // Append to existing arrays or create new ones, avoiding duplicates
+    let post_arr = hooks_obj
+        .entry("PostToolUse")
+        .or_insert(serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("PostToolUse is not an array"))?;
+    if !post_arr.iter().any(|e| e.get("hooks").and_then(|h| h.as_array()).map(|h| h.iter().any(|x| x.get("command").and_then(|c| c.as_str()).map(|c| c.contains("aigit-post-tool")).unwrap_or(false))).unwrap_or(false)) {
+        post_arr.push(post_hook_entry);
+    }
+
+    let pre_arr = hooks_obj
+        .entry("PreToolUse")
+        .or_insert(serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("PreToolUse is not an array"))?;
+    if !pre_arr.iter().any(|e| e.get("hooks").and_then(|h| h.as_array()).map(|h| h.iter().any(|x| x.get("command").and_then(|c| c.as_str()).map(|c| c.contains("aigit-pre-tool")).unwrap_or(false))).unwrap_or(false)) {
+        pre_arr.push(pre_hook_entry);
+    }
+
+    let settings_json = serde_json::to_string_pretty(&settings)?;
+    fs::write(&settings_path, settings_json)?;
+    println!("Updated: {}", settings_path.display());
+    println!("Claude Code hooks installed. Set AIGIT_AGENT, AIGIT_MODEL, AIGIT_INTENT env vars to customize.");
+    Ok(())
+}
+
+fn hook_uninstall_claude(base: &std::path::Path) -> Result<()> {
+    use std::fs;
+
+    let claude_dir = base.join(".claude");
+    let hooks_dir = claude_dir.join("hooks");
+
+    for name in &["aigit-post-tool.sh", "aigit-pre-tool.sh"] {
+        let path = hooks_dir.join(name);
+        if path.exists() {
+            fs::remove_file(&path)?;
+            println!("Removed: {}", path.display());
+        }
+    }
+
+    // Prune aigit entries from settings.json
+    let settings_path = claude_dir.join("settings.json");
+    if settings_path.exists() {
+        let contents = fs::read_to_string(&settings_path)?;
+        if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&contents) {
+            if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+                for event in &["PostToolUse", "PreToolUse"] {
+                    if let Some(arr) = hooks.get_mut(*event).and_then(|a| a.as_array_mut()) {
+                        arr.retain(|e| {
+                            !e.get("hooks")
+                                .and_then(|h| h.as_array())
+                                .map(|h| h.iter().any(|x| x.get("command").and_then(|c| c.as_str()).map(|c| c.contains("aigit-")).unwrap_or(false)))
+                                .unwrap_or(false)
+                        });
+                    }
+                }
+            }
+            fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+            println!("Updated: {}", settings_path.display());
+        }
+    }
+    Ok(())
+}
+
+pub async fn conflict_check(args: ConflictCheckArgs, base: &std::path::Path) -> Result<()> {
+    use std::collections::HashMap;
+
+    let aigit_dir = base.join(".aigit");
+    if !aigit_dir.exists() {
+        // No aigit repo — silently exit clean (hook should not block)
+        return Ok(());
+    }
+
+    let db_path = aigit_dir.join("db.sqlite");
+    let db = db::Database::connect(db_path).await?;
+
+    let rows = db.get_artifact_commit_rows().await?;
+    let window = args.window as usize;
+
+    // Collect agents that have touched this specific file within the window
+    let mut agents: HashMap<String, Option<String>> = HashMap::new();
+    let mut count = 0usize;
+
+    for row in &rows {
+        if row.artifact_path != args.path {
+            continue;
+        }
+        if window > 0 && count >= window {
+            break;
+        }
+        count += 1;
+        agents.entry(row.agent_id.clone()).or_insert_with(|| row.intent.clone());
+    }
+
+    // If an agent filter is provided, remove the current agent so we only warn
+    // about *other* agents having touched this file.
+    if let Some(ref self_agent) = args.agent {
+        agents.remove(self_agent);
+    }
+
+    if !agents.is_empty() {
+        let agent_list: Vec<String> = agents
+            .iter()
+            .map(|(id, intent)| {
+                format!(
+                    "{} (intent: \"{}\")",
+                    id,
+                    intent.as_deref().unwrap_or("none")
+                )
+            })
+            .collect();
+        anyhow::bail!(
+            "conflict: {} was recently modified by: {}",
+            args.path,
+            agent_list.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
+pub async fn resolve(args: ResolveArgs, base: &std::path::Path) -> Result<()> {
+    use std::collections::HashMap;
+
+    let aigit_dir = base.join(".aigit");
+    if !aigit_dir.exists() {
+        anyhow::bail!("aigit repository not initialized. Run 'aigit init' first.");
+    }
+
+    let db_path = aigit_dir.join("db.sqlite");
+    let db = db::Database::connect(db_path).await?;
+
+    // Find the two most recent commits from distinct agents for this file
+    let rows = db.get_artifact_commit_rows().await?;
+    let mut agent_commits: HashMap<String, String> = HashMap::new(); // agent_id -> commit_id
+
+    for row in &rows {
+        if row.artifact_path != args.path {
+            continue;
+        }
+        agent_commits.entry(row.agent_id.clone()).or_insert(row.commit_id.clone());
+        if agent_commits.len() >= 2 {
+            break;
+        }
+    }
+
+    if agent_commits.len() < 2 {
+        anyhow::bail!(
+            "No multi-agent conflict found for '{}'. Need commits from at least 2 different agents.",
+            args.path
+        );
+    }
+
+    // Sort by agent_id for deterministic source/target assignment
+    let mut agent_list: Vec<(String, String)> = agent_commits.into_iter().collect();
+    agent_list.sort_by(|a, b| a.0.cmp(&b.0));
+    merge(MergeArgs {
+        source: agent_list[0].1.clone(),
+        target: agent_list[1].1.clone(),
+        llm: args.llm,
+        output: args.output,
+        quiet: false,
+    }, base).await
 }

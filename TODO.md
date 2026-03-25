@@ -26,38 +26,39 @@ and detect/resolve conflicts when multiple agents touch the same files.
 
 ### 3a: Auto-tracking via Claude Code Hooks
 
-- [ ] Write a Claude Code `PostToolUse` hook that fires after file writes
+- [x] Write a Claude Code `PostToolUse` hook that fires after file writes
   - Captures the tool input (file path, content) and calls `aigit commit`
   - Reads agent identity from `AIGIT_AGENT` env var or `.aigit/config.toml`
   - Reads the active prompt/intent from a session context file
-- [ ] Write a Claude Code `PreToolUse` hook that fires before file writes
+- [x] Write a Claude Code `PreToolUse` hook that fires before file writes
   - Checks whether the target file was last touched by a *different* agent
   - If conflict risk detected, writes a warning to stderr so Claude sees it
-- [ ] Document how to install hooks in `.claude/settings.json`
+- [x] Document how to install hooks in `.claude/settings.json` (`hook install --claude` automates this)
 
 ### 3b: MCP Server (Agent Query Interface)
 
-- [ ] Implement an `aigit mcp` subcommand that starts a Model Context Protocol server
-  - Exposes tools: `aigit_log`, `aigit_show`, `aigit_diff`, `aigit_blame`, `aigit_merge`
+- [x] Implement an `aigit mcp` subcommand that starts a Model Context Protocol server
+  - Exposes tools: `aigit_log`, `aigit_show`, `aigit_diff`, `aigit_blame`, `aigit_merge`, `aigit_context`, `aigit_conflict_check`
   - Lets Claude Code agents query history and intent without shell commands
-- [ ] Register the MCP server in project `.mcp.json` for automatic discovery
-- [ ] Add `aigit_conflict_check` MCP tool: given a file path, returns the last
+- [x] Register the MCP server in project `.mcp.json` for automatic discovery (`aigit mcp --install`)
+- [x] Add `aigit_conflict_check` MCP tool: given a file path, returns the last
       agent/commit that touched it and flags if a different agent is about to edit
 
 ### 3c: Conflict Detection & Resolution
 
-- [ ] Track which files each commit touches (populate `artifacts` field reliably)
+- [x] Track which files each commit touches — `commit_artifacts` normalized table added (migration `20260318000001`); `insert_commit` writes to both JSON column and table; artifact lookups use indexed `JOIN` instead of `LIKE %path%`
 - [x] Add `aigit conflicts` command: shows files where >1 agent has recent commits (`--window N` to limit scan depth)
 - [x] Add `aigit merge --output <path>` to write merge result to a file (implemented; `--llm` still falls back to textual merge)
-- [ ] Implement `aigit merge --llm` using Anthropic API (or local Ollama)
+- [x] Implement `aigit merge --llm` using Anthropic API (or local Ollama)
   - Sends both versions + both agents' prompts/intents to an LLM
   - Returns a merged version that reconciles the intents
-- [ ] Add `aigit resolve <file>` command that invokes LLM merge for a specific file
+- [x] Add `aigit resolve <file>` command that invokes LLM merge for a specific file
+- [x] Add `aigit conflict-check <file>` command — exits 1 if conflict detected; used by PreToolUse hook
 
 ### 3d: Agent Identity for Claude Code
 
 - [ ] Define a standard agent naming convention for Claude Code sessions
-  (e.g., `claude-code:<task-type>` or read from `CLAUDE_AGENT_ID`)
+  (e.g., `claude-code:<task-type>` or read from `CLAUDE_AGENT_ID`; hooks default to `claude-code` via `AIGIT_AGENT` env var)
 - [ ] Add `aigit agents add` support for Claude Code agent profiles with
       default model, allowed file patterns, and merge priority
 
@@ -71,8 +72,8 @@ and detect/resolve conflicts when multiple agents touch the same files.
 
 ## Phase 5: Polish & Testing
 
-- [ ] Add unit tests for `db.rs` (CRUD operations)
-- [ ] Add integration tests: init → commit → log → diff pipeline
+- [x] Add unit tests for `db.rs` (CRUD operations) — 13 tests implemented
+- [x] Add integration tests: init → commit → log → diff pipeline — implemented in `tests/integration.rs`
 - [ ] Write end-to-end test simulating two Claude Code agents editing the same file
 - [ ] Write `CONTRIBUTING.md` and finalize `README.md`
 - [ ] Publish initial crate to crates.io

@@ -1,0 +1,191 @@
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct LlmConfig {
+    pub provider: String,
+    pub model: String,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConfigFile {
+    llm: Option<LlmSection>,
+}
+
+#[derive(Deserialize)]
+struct LlmSection {
+    provider: Option<String>,
+    model: Option<String>,
+    api_key: Option<String>,
+    base_url: Option<String>,
+}
+
+/// Load LLM config from `.aigit/config.toml`, falling back to env vars.
+/// Precedence: env vars > config file > built-in defaults.
+pub fn load_llm_config(aigit_dir: &Path) -> Result<LlmConfig> {
+    // Start with config-file values (lowest precedence)
+    let mut provider = "anthropic".to_string();
+    let mut model = "claude-sonnet-4-6".to_string();
+    let mut api_key: Option<String> = None;
+    let mut base_url: Option<String> = None;
+
+    let config_path = aigit_dir.join("config.toml");
+    if config_path.exists() {
+        let contents = std::fs::read_to_string(&config_path)?;
+        if let Ok(cfg) = toml::from_str::<ConfigFile>(&contents) {
+            if let Some(llm) = cfg.llm {
+                if let Some(p) = llm.provider { provider = p; }
+                if let Some(m) = llm.model { model = m; }
+                if let Some(k) = llm.api_key { api_key = Some(k); }
+                base_url = llm.base_url;
+            }
+        }
+    }
+
+    // Env vars override config file (higher precedence)
+    if let Ok(p) = std::env::var("AIGIT_LLM_PROVIDER") { provider = p; }
+    if let Ok(m) = std::env::var("AIGIT_LLM_MODEL") { model = m; }
+    if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") { api_key = Some(k); }
+
+    // For ollama, default base_url if not set
+    if provider == "ollama" && base_url.is_none() {
+        base_url = Some("http://localhost:11434".to_string());
+    }
+
+    Ok(LlmConfig { provider, model, api_key, base_url })
+}
+
+// ── Anthropic message types ────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct AnthropicRequest<'a> {
+    model: &'a str,
+    max_tokens: u32,
+    messages: Vec<AnthropicMessage<'a>>,
+}
+
+#[derive(Serialize)]
+struct AnthropicMessage<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+#[derive(Deserialize)]
+struct AnthropicResponse {
+    content: Vec<AnthropicContent>,
+}
+
+#[derive(Deserialize)]
+struct AnthropicContent {
+    #[serde(rename = "type")]
+    kind: String,
+    text: Option<String>,
+}
+
+// ── Ollama types ───────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct OllamaRequest<'a> {
+    model: &'a str,
+    prompt: &'a str,
+    stream: bool,
+}
+
+#[derive(Deserialize)]
+struct OllamaResponse {
+    response: String,
+}
+
+// ── Public API ─────────────────────────────────────────────────────────────
+
+/// Call the configured LLM with a prompt and return the response text.
+pub async fn call_llm(config: &LlmConfig, prompt: &str) -> Result<String> {
+    match config.provider.as_str() {
+        "anthropic" => call_anthropic(config, prompt).await,
+        "ollama" => call_ollama(config, prompt).await,
+        other => anyhow::bail!(
+            "Unknown LLM provider '{}'. Set provider = \"anthropic\" or \"ollama\" in .aigit/config.toml.",
+            other
+        ),
+    }
+}
+
+async fn call_anthropic(config: &LlmConfig, prompt: &str) -> Result<String> {
+    let api_key = config
+        .api_key
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!(
+            "Anthropic API key not set. Set ANTHROPIC_API_KEY env var or api_key in .aigit/config.toml."
+        ))?;
+
+    let base_url = config
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.anthropic.com");
+
+    let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+
+    let body = AnthropicRequest {
+        model: &config.model,
+        max_tokens: 8192,
+        messages: vec![AnthropicMessage { role: "user", content: prompt }],
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    let resp = client
+        .post(&url)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Anthropic API error {}: {}", status, text);
+    }
+
+    let parsed: AnthropicResponse = resp.json().await?;
+    parsed
+        .content
+        .into_iter()
+        .find(|c| c.kind == "text")
+        .and_then(|c| c.text)
+        .ok_or_else(|| anyhow::anyhow!("Anthropic response contained no text content"))
+}
+
+async fn call_ollama(config: &LlmConfig, prompt: &str) -> Result<String> {
+    let base_url = config
+        .base_url
+        .as_deref()
+        .unwrap_or("http://localhost:11434");
+
+    let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
+
+    let body = OllamaRequest {
+        model: &config.model,
+        prompt,
+        stream: false,
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    let resp = client.post(&url).json(&body).send().await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Ollama API error {}: {}", status, text);
+    }
+
+    let parsed: OllamaResponse = resp.json().await?;
+    Ok(parsed.response)
+}

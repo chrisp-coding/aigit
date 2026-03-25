@@ -39,6 +39,14 @@ A local‑first, Git‑integrated tool that tracks AI‑generated content (code,
 | `timestamp` | INTEGER | Unix millisecond timestamp |
 | `parent_ids` | JSON | Array of parent commit IDs (for branching) |
 
+### Table: `commit_artifacts`
+| Column | Type | Description |
+|--------|------|-------------|
+| `commit_id` | TEXT REFERENCES commits(id) | Link to commit |
+| `artifact_path` | TEXT | Path to a generated file |
+
+Normalized form of the JSON `artifacts` column. Added in migration `20260318000001_optimizations.sql` with an index on `artifact_path` and a backfill from existing rows. `insert_commit` writes to this table on every new commit. Artifact lookups use `JOIN commit_artifacts` instead of `LIKE %path%` scans.
+
 ### Table: `embeddings`
 | Column | Type | Description |
 |--------|------|-------------|
@@ -82,10 +90,14 @@ aigit agents add <id> --name "..." [--description "..."] [--config JSON]
 
 ### Integration
 ```
-aigit hook install [--git]                 # Install hook; --git installs .git/hooks/post-commit
-aigit hook uninstall [--git]
+aigit hook install [--git] [--claude]      # Install hook; --git installs .git/hooks/post-commit;
+                                           # --claude writes .claude/hooks/ scripts and patches .claude/settings.json
+aigit hook uninstall [--git] [--claude]
 aigit hook run <name> [--git-hash HASH]    # Run a specific hook (e.g. post-commit)
-aigit hook list                            # List installed hooks
+aigit hook list                            # List installed hooks (git and Claude Code)
+aigit conflict-check <file> [--agent ID] [--window N]  # Exit 1 if file has multi-agent conflicts
+aigit resolve <file> [--output FILE] [--llm]            # Merge the two most recent conflicting commits
+aigit mcp [--install]                      # Start stdio JSON-RPC 2.0 MCP server; --install writes .mcp.json
 ```
 
 ## Architecture
@@ -93,8 +105,10 @@ aigit hook list                            # List installed hooks
 ### Components
 1. **CLI (Rust)** – uses `clap` for argument parsing, `sqlx` for SQLite, `git2‑rs` for Git integration.
 2. **Embedding service (optional)** – local ONNX model (all‑MiniLM‑L6‑v2) to generate embeddings for semantic diffing; can be disabled.
-3. **Merge‑assist LLM** – calls local LLM (Ollama) or configured API to resolve conflicts; optional.
+3. **Merge‑assist LLM** (`src/llm.rs`) – calls Anthropic API or local Ollama to resolve conflicts. Config via `.aigit/config.toml [llm]` section; env vars `ANTHROPIC_API_KEY`, `AIGIT_LLM_PROVIDER`, `AIGIT_LLM_MODEL` override config.
 4. **Git hooks** – post‑commit hook to auto‑capture AI‑generated changes when using Claude Code/Cursor.
+5. **Claude Code hooks** (`src/mcp.rs`) – `hook install --claude` writes `.claude/hooks/aigit-post-tool.sh` (PostToolUse) and `.claude/hooks/aigit-pre-tool.sh` (PreToolUse); patches `.claude/settings.json`.
+6. **MCP server** (`src/mcp.rs`) – stdio JSON-RPC 2.0 server exposing `aigit_log`, `aigit_show`, `aigit_diff`, `aigit_blame`, `aigit_context`, `aigit_conflict_check`, and `aigit_merge` tools.
 
 ### Directory layout
 ```
@@ -131,21 +145,31 @@ aigit hook list                            # List installed hooks
 - [x] Unit and integration tests.
 - **Deliverable**: Full Git integration; line‑level attribution; agent context queries.
 
-### Phase 2 – Claude Code integration (current focus)
-- [ ] Claude Code PostToolUse hook – auto‑calls `aigit commit` after file writes.
-- [ ] Claude Code PreToolUse hook – warns when another agent recently touched the target file.
-- [ ] MCP server (`aigit mcp`) exposing aigit tools over Model Context Protocol.
+### Phase 1.5 – Database optimizations ✅ Complete
+- [x] WAL journal mode, `synchronous=NORMAL`, `foreign_keys=ON` set on every connection.
+- [x] `commit_artifacts` normalized table with index on `artifact_path`; backfilled from JSON column.
+- [x] Partial index on `commits(git_hash) WHERE git_hash IS NOT NULL`.
+- [x] Composite index on `commits(agent_id, timestamp DESC)`; index on `branches(agent_id)`.
+- [x] `get_commits_by_git_hashes` batch method (single `IN` query) replaces N+1 per-hash lookups.
+- [x] `get_artifact_commit_rows` / `ArtifactAgentRow` — targeted conflict query that never loads output/prompt columns.
+- [x] N+1 queries eliminated in `blame`, `context`, and `conflicts` commands.
+
+### Phase 2 – Claude Code integration ✅ Complete
+- [x] Claude Code PostToolUse hook – auto‑calls `aigit commit` after file writes (`hook install --claude`).
+- [x] Claude Code PreToolUse hook – warns when another agent recently touched the target file (`hook install --claude`).
+- [x] MCP server (`aigit mcp`) exposing 7 tools over stdio JSON-RPC 2.0; `--install` writes `.mcp.json`.
 - [x] `aigit conflicts` command: files where >1 agent has recent commits (`--window N`, default 10).
-- [ ] LLM‑assisted merge (`merge --llm`) via Anthropic API or local Ollama.
-- [ ] `aigit resolve <file>` – per‑file LLM merge invocation.
+- [x] LLM‑assisted merge (`merge --llm`) via Anthropic API or local Ollama (`src/llm.rs`).
+- [x] `aigit resolve <file>` – per‑file LLM merge invocation; `--output` and `--llm` flags supported.
+- [x] `aigit conflict-check <file>` – exits 1 on conflict; used by PreToolUse hook.
 - **Deliverable**: Claude Code agents auto‑track work and detect/resolve conflicts.
 
-### Phase 3 – Semantic features
+### Phase 3 – Semantic features (current focus)
 - [ ] Embedding generation (local ONNX model, `all‑MiniLM‑L6‑v2`).
 - [ ] `diff --semantic` that reports cosine similarity and highlights semantic shifts.
 - [ ] `aigit search "<query>"` – find commits by semantic similarity to a prompt.
 - [ ] Semantic conflict scoring: flag conflicts where intents are semantically opposed.
-- **Deliverable**: Semantic diffing; conflict detection.
+- **Deliverable**: Semantic diffing; intent-aware conflict detection.
 
 ### Phase 4 (Future) – Polish & ecosystem
 - [ ] VS Code extension for visual history.
@@ -163,17 +187,17 @@ We can reuse the MiroFish container to simulate multi‑agent collaboration:
 
 ## Open Questions
 - **Embedding model:** Which local model? `all‑MiniLM‑L6‑v2` is small (80 MB) and fast.
-- **Merge‑assist LLM:** Default to local Ollama (e.g., `qwen2.5‑coder‑7b‑instruct`) or allow API?
+- **Merge‑assist LLM:** Resolved — `src/llm.rs` supports both Anthropic API and Ollama; open question is whether to add OpenAI as a third provider.
 - **Git integration depth:** Store aigit commits as Git notes? Keep separate DB?
 - **Performance:** SQLite with 10k commits; embedding generation async.
 
 ## Next Immediate Steps
-1. Set up Rust project (`cargo new aigit`).
-2. Define SQLite schema with `sqlx::migrate!`.
-3. Implement `init`, `commit`, `log`.
-4. Test with a manual commit from Claude Code output.
+1. Integrate `all-MiniLM-L6-v2` ONNX model; populate `embeddings` table on each `aigit commit`.
+2. Implement `diff --semantic` using cosine similarity of stored embeddings.
+3. Add `aigit search "<query>"` for semantic commit lookup.
+4. Add semantic conflict scoring (flag intents that are semantically opposed).
 
 ---
 
-*Spec version: 0.2 (2026‑03‑24)*
+*Spec version: 0.3 (2026‑03‑25)*
 *Author: Kai (Chris Woodcox’s AI assistant)*

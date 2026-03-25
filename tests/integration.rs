@@ -194,7 +194,7 @@ async fn test_merge_two_commits() {
     let id2 = commits[0].id.clone();
 
     aigit::cli::merge(
-        MergeArgs { source: id1, target: id2, llm: false, output: None },
+        MergeArgs { source: id1, target: id2, llm: false, output: None, quiet: false },
         dir.path(),
     )
     .await
@@ -352,6 +352,7 @@ async fn test_merge_output_to_file() {
             target: id2,
             llm: false,
             output: Some(merge_out.to_string_lossy().to_string()),
+            quiet: false,
         },
         dir.path(),
     )
