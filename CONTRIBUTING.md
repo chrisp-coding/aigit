@@ -96,11 +96,35 @@ tests/
 4. Implement the function in `cli.rs` with signature `pub async fn my_cmd(args: MyArgs, base: &std::path::Path) -> Result<()>`
 5. Add an integration test in `tests/integration.rs`
 
+## Branching Strategy
+
+This project uses trunk-based development with short-lived feature branches.
+
+- `main` — always buildable, always passes `cargo test`
+- `feat/<name>` — one feature or TODO item per branch
+- `fix/<name>` — bug fixes
+- `chore/<name>` — dependency updates, CI changes, tooling
+
+**Workflow:**
+
+```bash
+# Start from latest main
+git fetch origin && git checkout -b feat/mcp-server origin/main
+
+# Keep your branch current (rebase, not merge)
+git fetch origin && git rebase origin/main
+
+# Before opening a PR, squash fixup commits
+git rebase -i origin/main
+```
+
+PRs must pass `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` (enforced by CI).
+
 ## Submitting Changes
 
 - Keep PRs focused — one concern per PR
 - All tests must pass (`cargo test`)
-- Run `cargo clippy` and address warnings before submitting
+- Run `cargo clippy -- -D warnings` and address all warnings before submitting
 - Run `cargo fmt` to format code
 - Write a clear PR description explaining the *why*, not just the *what*
 
