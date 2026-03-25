@@ -2,12 +2,23 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LlmConfig {
     pub provider: String,
     pub model: String,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
+}
+
+impl std::fmt::Debug for LlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmConfig")
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -99,6 +110,40 @@ struct OllamaResponse {
     response: String,
 }
 
+// ── URL validation ─────────────────────────────────────────────────────────
+
+/// Validate a base_url before use to prevent SSRF.
+/// - Anthropic: must use https://.
+/// - Ollama: must be loopback (localhost / 127.0.0.1 / ::1) unless https://.
+fn validate_base_url(url: &str, provider: &str) -> Result<()> {
+    let is_https = url.starts_with("https://");
+    let is_http  = url.starts_with("http://");
+    if !is_https && !is_http {
+        anyhow::bail!("LLM base_url '{}' must start with https:// or http://", url);
+    }
+    match provider {
+        "anthropic" => {
+            if !is_https {
+                anyhow::bail!("Anthropic base_url must use https:// (got '{}')", url);
+            }
+        }
+        "ollama" => {
+            if !is_https {
+                let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"];
+                if !loopback.iter().any(|p| url.starts_with(p)) {
+                    anyhow::bail!(
+                        "Ollama base_url '{}' must be a loopback address \
+                         (localhost / 127.0.0.1 / [::1]) or use https://",
+                        url
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /// Call the configured LLM with a prompt and return the response text.
@@ -126,6 +171,7 @@ async fn call_anthropic(config: &LlmConfig, prompt: &str) -> Result<String> {
         .as_deref()
         .unwrap_or("https://api.anthropic.com");
 
+    validate_base_url(base_url, "anthropic")?;
     let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
 
     let body = AnthropicRequest {
@@ -149,7 +195,9 @@ async fn call_anthropic(config: &LlmConfig, prompt: &str) -> Result<String> {
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Anthropic API error {}: {}", status, text);
+        // Truncate to avoid leaking sensitive account metadata from error bodies.
+        let truncated = text.chars().take(256).collect::<String>();
+        anyhow::bail!("Anthropic API error {}: {}", status, truncated);
     }
 
     let parsed: AnthropicResponse = resp.json().await?;
@@ -167,6 +215,7 @@ async fn call_ollama(config: &LlmConfig, prompt: &str) -> Result<String> {
         .as_deref()
         .unwrap_or("http://localhost:11434");
 
+    validate_base_url(base_url, "ollama")?;
     let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
 
     let body = OllamaRequest {
@@ -183,7 +232,8 @@ async fn call_ollama(config: &LlmConfig, prompt: &str) -> Result<String> {
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Ollama API error {}: {}", status, text);
+        let truncated = text.chars().take(256).collect::<String>();
+        anyhow::bail!("Ollama API error {}: {}", status, truncated);
     }
 
     let parsed: OllamaResponse = resp.json().await?;

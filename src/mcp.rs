@@ -19,12 +19,24 @@ pub async fn run(args: McpArgs, base: &Path) -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
 
+    const MAX_LINE_BYTES: usize = 10 * 1024 * 1024; // 10 MB per JSON-RPC message
+
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) if l.trim().is_empty() => continue,
             Ok(l) => l,
             Err(_) => break,
         };
+        if line.len() > MAX_LINE_BYTES {
+            let resp = json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": { "code": -32700, "message": "Request too large" }
+            });
+            writeln!(out, "{}", resp)?;
+            out.flush()?;
+            continue;
+        }
 
         let request: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
@@ -264,6 +276,7 @@ async fn call_tool(name: &str, args: &Value, base: &Path) -> Result<Value> {
         "aigit_blame" => {
             let file = args.get("file").and_then(|f| f.as_str())
                 .ok_or_else(|| anyhow::anyhow!("file is required"))?;
+            validate_mcp_path(file)?;
             let lines_filter = args.get("lines").and_then(|l| l.as_str()).map(|s| s.to_string());
 
             let file_path = std::path::Path::new(file);
@@ -305,6 +318,7 @@ async fn call_tool(name: &str, args: &Value, base: &Path) -> Result<Value> {
 
         "aigit_context" => {
             let path = args.get("path").and_then(|p| p.as_str());
+            if let Some(p) = path { validate_mcp_path(p)?; }
             let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(10) as u32;
 
             let commits = if let Some(p) = path {
@@ -391,6 +405,20 @@ async fn call_tool(name: &str, args: &Value, base: &Path) -> Result<Value> {
 
         other => anyhow::bail!("Unknown tool: {}", other),
     }
+}
+
+/// Reject file paths from MCP callers that contain traversal components or are absolute.
+fn validate_mcp_path(path: &str) -> Result<()> {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        anyhow::bail!("MCP tool file path must be relative, got absolute path: {}", path);
+    }
+    for component in p.components() {
+        if component == std::path::Component::ParentDir {
+            anyhow::bail!("MCP tool file path '{}' contains '..' traversal", path);
+        }
+    }
+    Ok(())
 }
 
 fn text_result(text: String) -> Result<Value> {

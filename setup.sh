@@ -14,10 +14,11 @@ if ! command -v sqlx &> /dev/null; then
     cargo install sqlx-cli --no-default-features --features sqlite
 fi
 
-# Run migrations
+# Run migrations (explicitly target the local SQLite file to avoid hitting any
+# DATABASE_URL set in the environment pointing to a remote database).
 echo "Running database migrations..."
-sqlx database create
-sqlx migrate run
+DATABASE_URL="sqlite:.aigit/db.sqlite" sqlx database create
+DATABASE_URL="sqlite:.aigit/db.sqlite" sqlx migrate run
 
 # Install project pre-commit hook (enforces fmt + clippy before each commit)
 HOOK_PATH=".git/hooks/pre-commit"
