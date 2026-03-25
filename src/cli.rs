@@ -1,23 +1,36 @@
+use crate::db;
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use std::path::Path;
-use crate::db;
 
 const MAX_INPUT_BYTES: u64 = 50 * 1024 * 1024;
 
 fn check_length(s: &str, max: usize) -> Result<String, String> {
     if s.len() > max {
-        Err(format!("value exceeds maximum length of {} characters", max))
+        Err(format!(
+            "value exceeds maximum length of {} characters",
+            max
+        ))
     } else {
         Ok(s.to_string())
     }
 }
 
-fn validate_agent(s: &str) -> Result<String, String> { check_length(s, 128) }
-fn validate_intent(s: &str) -> Result<String, String> { check_length(s, 512) }
-fn validate_model(s: &str) -> Result<String, String> { check_length(s, 256) }
-fn validate_agent_id(s: &str) -> Result<String, String> { check_length(s, 128) }
-fn validate_agent_name(s: &str) -> Result<String, String> { check_length(s, 128) }
+fn validate_agent(s: &str) -> Result<String, String> {
+    check_length(s, 128)
+}
+fn validate_intent(s: &str) -> Result<String, String> {
+    check_length(s, 512)
+}
+fn validate_model(s: &str) -> Result<String, String> {
+    check_length(s, 256)
+}
+fn validate_agent_id(s: &str) -> Result<String, String> {
+    check_length(s, 128)
+}
+fn validate_agent_name(s: &str) -> Result<String, String> {
+    check_length(s, 128)
+}
 
 fn validate_git_hash(s: &str) -> Result<String, String> {
     let len = s.len();
@@ -41,8 +54,7 @@ fn validate_write_path(path: &str, base: &std::path::Path) -> Result<()> {
     }
     // If absolute, it must resolve within the canonical project root.
     if p.is_absolute() {
-        let canonical_base = std::fs::canonicalize(base)
-            .unwrap_or_else(|_| base.to_path_buf());
+        let canonical_base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
         if !p.starts_with(&canonical_base) {
             anyhow::bail!("output path '{}' is outside the project directory", path);
         }
@@ -60,7 +72,9 @@ fn strip_ansi(s: &str) -> String {
                 chars.next();
                 // consume until a letter (end of CSI sequence)
                 for nc in chars.by_ref() {
-                    if nc.is_ascii_alphabetic() { break; }
+                    if nc.is_ascii_alphabetic() {
+                        break;
+                    }
                 }
             }
             // skip any other ESC-prefixed sequences silently
@@ -354,7 +368,9 @@ pub async fn commit(args: CommitArgs, base: &std::path::Path) -> Result<()> {
         Some(text) => text,
         None => {
             let mut buffer = String::new();
-            io::stdin().take(MAX_INPUT_BYTES).read_to_string(&mut buffer)?;
+            io::stdin()
+                .take(MAX_INPUT_BYTES)
+                .read_to_string(&mut buffer)?;
             if buffer.len() as u64 == MAX_INPUT_BYTES {
                 anyhow::bail!("stdin input exceeds the 50 MB limit");
             }
@@ -368,8 +384,7 @@ pub async fn commit(args: CommitArgs, base: &std::path::Path) -> Result<()> {
         anyhow::bail!("aigit repository not initialized. Run 'aigit init' first.");
     }
 
-    let canonical_base = std::fs::canonicalize(base)
-        .unwrap_or_else(|_| base.to_path_buf());
+    let canonical_base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
 
     // Capture the output file path before consuming args.output (for artifacts)
     let output_path: Option<String> = args.output.clone();
@@ -388,7 +403,9 @@ pub async fn commit(args: CommitArgs, base: &std::path::Path) -> Result<()> {
                 anyhow::bail!("--output file exceeds the 50 MB limit");
             }
             let mut buffer = String::new();
-            BufReader::new(file).take(MAX_INPUT_BYTES).read_to_string(&mut buffer)?;
+            BufReader::new(file)
+                .take(MAX_INPUT_BYTES)
+                .read_to_string(&mut buffer)?;
             buffer
         }
         None => {
@@ -396,7 +413,9 @@ pub async fn commit(args: CommitArgs, base: &std::path::Path) -> Result<()> {
                 anyhow::bail!("--output is required when prompt is read from stdin");
             }
             let mut buffer = String::new();
-            io::stdin().take(MAX_INPUT_BYTES).read_to_string(&mut buffer)?;
+            io::stdin()
+                .take(MAX_INPUT_BYTES)
+                .read_to_string(&mut buffer)?;
             if buffer.len() as u64 == MAX_INPUT_BYTES {
                 anyhow::bail!("stdin input exceeds the 50 MB limit");
             }
@@ -457,7 +476,9 @@ pub async fn commit(args: CommitArgs, base: &std::path::Path) -> Result<()> {
     // Advance HEAD on any branches registered for this agent
     if let Ok(branches) = db.list_branches_for_agent(&agent_id).await {
         for branch in branches {
-            let _ = db.set_branch_head(&branch.name, &agent_id, &commit_id).await;
+            let _ = db
+                .set_branch_head(&branch.name, &agent_id, &commit_id)
+                .await;
         }
     }
 
@@ -473,7 +494,9 @@ pub async fn log(args: LogArgs, base: &std::path::Path) -> Result<()> {
     let db_path = aigit_dir.join("db.sqlite");
     let db = db::Database::connect(db_path).await?;
 
-    let commits = db.list_commits(args.agent.as_deref(), args.limit, args.since).await?;
+    let commits = db
+        .list_commits(args.agent.as_deref(), args.limit, args.since)
+        .await?;
 
     if commits.is_empty() {
         println!("No commits found.");
@@ -485,7 +508,13 @@ pub async fn log(args: LogArgs, base: &std::path::Path) -> Result<()> {
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| commit.timestamp.to_string());
         let intent = commit.intent.as_deref().unwrap_or("(no intent)");
-        println!("{} | {} | {} | {}", &commit.id[..commit.id.len().min(12)], time, commit.agent_id, intent);
+        println!(
+            "{} | {} | {} | {}",
+            &commit.id[..commit.id.len().min(12)],
+            time,
+            commit.agent_id,
+            intent
+        );
     }
 
     Ok(())
@@ -539,15 +568,23 @@ pub async fn diff(args: DiffArgs, base: &std::path::Path) -> Result<()> {
     let db_path = aigit_dir.join("db.sqlite");
     let db = db::Database::connect(db_path).await?;
 
-    let c1 = db.get_commit_by_prefix(&args.commit1).await?
+    let c1 = db
+        .get_commit_by_prefix(&args.commit1)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Commit not found: {}", args.commit1))?;
-    let c2 = db.get_commit_by_prefix(&args.commit2).await?
+    let c2 = db
+        .get_commit_by_prefix(&args.commit2)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Commit not found: {}", args.commit2))?;
 
     let label1 = format!("a/{} ({})", &c1.id[..c1.id.len().min(12)], c1.agent_id);
     let label2 = format!("b/{} ({})", &c2.id[..c2.id.len().min(12)], c2.agent_id);
 
-    println!("diff --aigit {} {}", &c1.id[..c1.id.len().min(12)], &c2.id[..c2.id.len().min(12)]);
+    println!(
+        "diff --aigit {} {}",
+        &c1.id[..c1.id.len().min(12)],
+        &c2.id[..c2.id.len().min(12)]
+    );
     println!("--- {}", label1);
     println!("+++ {}", label2);
 
@@ -562,7 +599,7 @@ pub async fn diff(args: DiffArgs, base: &std::path::Path) -> Result<()> {
                 let prefix = match change.tag() {
                     ChangeTag::Delete => "-",
                     ChangeTag::Insert => "+",
-                    ChangeTag::Equal  => " ",
+                    ChangeTag::Equal => " ",
                 };
                 print!("{}{}", prefix, change);
             }
@@ -579,7 +616,7 @@ pub async fn blame(args: BlameArgs, base: &std::path::Path) -> Result<()> {
     }
     let db_path = aigit_dir.join("db.sqlite");
     let db = db::Database::connect(db_path).await?;
-    
+
     println!("Blame for: {}", args.file);
 
     // Parse optional line range filter (e.g. "10-20" or "5")
@@ -596,11 +633,11 @@ pub async fn blame(args: BlameArgs, base: &std::path::Path) -> Result<()> {
 
     // Get Git blame entries
     let blame_entries = crate::git::get_file_blame(base, Path::new(&args.file))?;
-    
+
     if blame_entries.is_empty() {
         println!("No Git blame available for file (not tracked or not in Git repo).");
         println!("Falling back to artifact search:");
-        
+
         // Fallback to original artifact search
         let commits = db.list_commits(None, 1000, None).await?;
         let mut found = false;
@@ -610,19 +647,24 @@ pub async fn blame(args: BlameArgs, base: &std::path::Path) -> Result<()> {
             match serde_json::from_str::<Vec<String>>(artifacts_json) {
                 Ok(artifacts) => {
                     if artifacts.contains(&args.file) {
-                        println!("- {}: {} ({})",
+                        println!(
+                            "- {}: {} ({})",
                             commit.id,
                             commit.intent.as_deref().unwrap_or("(no intent)"),
-                            &commit.agent_id);
+                            &commit.agent_id
+                        );
                         found = true;
                     }
                 }
                 Err(_) => {
-                    eprintln!("Warning: commit {} has corrupted artifacts data", &commit.id[..commit.id.len().min(12)]);
+                    eprintln!(
+                        "Warning: commit {} has corrupted artifacts data",
+                        &commit.id[..commit.id.len().min(12)]
+                    );
                 }
             }
         }
-        
+
         if !found {
             println!("No aigit commits found for file.");
         }
@@ -633,7 +675,8 @@ pub async fn blame(args: BlameArgs, base: &std::path::Path) -> Result<()> {
         // Batch-fetch all aigit commits for the unique git hashes in this blame output
         let unique_hashes: Vec<String> = {
             let mut seen = std::collections::HashSet::new();
-            blame_entries.iter()
+            blame_entries
+                .iter()
                 .filter(|e| seen.insert(e.commit_hash.clone()))
                 .map(|e| e.commit_hash.clone())
                 .collect()
@@ -655,17 +698,19 @@ pub async fn blame(args: BlameArgs, base: &std::path::Path) -> Result<()> {
             } else {
                 format!("{}-{}", entry.line_start, entry.line_end)
             };
-            
+
             let git_commit_short = &entry.commit_hash[..entry.commit_hash.len().min(12)];
-            
+
             match aigit_commit {
                 Some(commit) => {
-                    println!("{:4} | {:20} | {} ({}: {})", 
+                    println!(
+                        "{:4} | {:20} | {} ({}: {})",
                         line_range,
                         git_commit_short,
                         commit.id,
                         &commit.agent_id,
-                        commit.intent.as_deref().unwrap_or("(no intent)"));
+                        commit.intent.as_deref().unwrap_or("(no intent)")
+                    );
                 }
                 None => {
                     println!("{:4} | {:20} | (Git only)", line_range, git_commit_short);
@@ -673,7 +718,7 @@ pub async fn blame(args: BlameArgs, base: &std::path::Path) -> Result<()> {
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -689,18 +734,34 @@ pub async fn merge(args: MergeArgs, base: &std::path::Path) -> Result<()> {
     let db = db::Database::connect(db_path).await?;
 
     // Load source and target commits
-    let source = db.get_commit_by_prefix(&args.source).await?
+    let source = db
+        .get_commit_by_prefix(&args.source)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Source commit not found: {}", args.source))?;
-    let target = db.get_commit_by_prefix(&args.target).await?
+    let target = db
+        .get_commit_by_prefix(&args.target)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Target commit not found: {}", args.target))?;
 
-    let source_label = format!("{} | {} | intent: \"{}\"",
-        &source.id[..source.id.len().min(12)], source.agent_id, source.intent.as_deref().unwrap_or("no intent"));
-    let target_label = format!("{} | {} | intent: \"{}\"",
-        &target.id[..target.id.len().min(12)], target.agent_id, target.intent.as_deref().unwrap_or("no intent"));
+    let source_label = format!(
+        "{} | {} | intent: \"{}\"",
+        &source.id[..source.id.len().min(12)],
+        source.agent_id,
+        source.intent.as_deref().unwrap_or("no intent")
+    );
+    let target_label = format!(
+        "{} | {} | intent: \"{}\"",
+        &target.id[..target.id.len().min(12)],
+        target.agent_id,
+        target.intent.as_deref().unwrap_or("no intent")
+    );
 
     if !args.quiet {
-        println!("Merging {} into {}", &source.id[..source.id.len().min(12)], &target.id[..target.id.len().min(12)]);
+        println!(
+            "Merging {} into {}",
+            &source.id[..source.id.len().min(12)],
+            &target.id[..target.id.len().min(12)]
+        );
         println!("Source: {}", source_label);
         println!("Target: {}", target_label);
         println!();
@@ -739,7 +800,11 @@ Output only the merged content with no explanation, preamble, or markdown fences
                         if let Some(ref out_path) = args.output {
                             validate_write_path(out_path, base)?;
                             std::fs::write(out_path, &result).map_err(|e| {
-                                anyhow::anyhow!("Failed to write merge output to '{}': {}", out_path, e)
+                                anyhow::anyhow!(
+                                    "Failed to write merge output to '{}': {}",
+                                    out_path,
+                                    e
+                                )
                             })?;
                             if !args.quiet {
                                 println!("LLM merge result written to: {}", out_path);
@@ -804,11 +869,12 @@ Output only the merged content with no explanation, preamble, or markdown fences
             merged.push_str(&format!(">>>>>>> {}\n", target_label));
         }
     }
-    
+
     if let Some(ref out_path) = args.output {
         validate_write_path(out_path, base)?;
-        std::fs::write(out_path, &merged)
-            .map_err(|e| anyhow::anyhow!("Failed to write merge output to '{}': {}", out_path, e))?;
+        std::fs::write(out_path, &merged).map_err(|e| {
+            anyhow::anyhow!("Failed to write merge output to '{}': {}", out_path, e)
+        })?;
         if !args.quiet {
             println!("Merge result written to: {}", out_path);
             println!("Note: This is a basic textual merge. Use --llm for LLM-assisted merge.");
@@ -847,8 +913,14 @@ pub async fn agents(sub: AgentCommands, base: &std::path::Path) -> Result<()> {
                 }
             }
         }
-        AgentCommands::Add { id, name, description, config } => {
-            db.insert_agent(&id, &name, description.as_deref(), &config).await?;
+        AgentCommands::Add {
+            id,
+            name,
+            description,
+            config,
+        } => {
+            db.insert_agent(&id, &name, description.as_deref(), &config)
+                .await?;
             println!("Agent '{}' added successfully.", id);
         }
     }
@@ -871,22 +943,31 @@ pub async fn branch(sub: BranchCommands, base: &std::path::Path) -> Result<()> {
             if branches.is_empty() {
                 println!("No branches found.");
             } else {
-                println!("{:<20} {:<20} {:<30} Head Commit", "Name", "Agent", "Intent");
+                println!(
+                    "{:<20} {:<20} {:<30} Head Commit",
+                    "Name", "Agent", "Intent"
+                );
                 println!("{}", "─".repeat(80));
                 for b in branches {
                     let intent = b.intent.as_deref().unwrap_or("(none)");
-                    let head = b.head_commit_id.as_deref()
+                    let head = b
+                        .head_commit_id
+                        .as_deref()
                         .map(|id| &id[..id.len().min(12)])
                         .unwrap_or("(none)");
                     println!("{:<20} {:<20} {:<30} {}", b.name, b.agent_id, intent, head);
                 }
             }
         }
-        BranchCommands::Create { name, agent, intent } => {
+        BranchCommands::Create {
+            name,
+            agent,
+            intent,
+        } => {
             // Set initial HEAD to the most recent commit by this agent, if any
-            let head = db.get_latest_commit_by_agent(&agent).await?
-                .map(|c| c.id);
-            db.insert_branch(&name, &agent, intent.as_deref(), head.as_deref()).await?;
+            let head = db.get_latest_commit_by_agent(&agent).await?.map(|c| c.id);
+            db.insert_branch(&name, &agent, intent.as_deref(), head.as_deref())
+                .await?;
             println!("Branch '{}' created for agent '{}'.", name, agent);
             if let Some(ref h) = head {
                 println!("  HEAD: {}", &h[..h.len().min(12)]);
@@ -924,7 +1005,9 @@ pub async fn status(_args: StatusArgs, base: &std::path::Path) -> Result<()> {
     } else {
         println!("Branches:");
         for b in &all_branches {
-            let head = b.head_commit_id.as_deref()
+            let head = b
+                .head_commit_id
+                .as_deref()
                 .map(|id| &id[..id.len().min(12)])
                 .unwrap_or("(none)");
             println!("  {} [{}]  HEAD: {}", b.name, b.agent_id, head);
@@ -958,8 +1041,10 @@ pub async fn status(_args: StatusArgs, base: &std::path::Path) -> Result<()> {
                 .map(|dt| dt.format("%Y-%m-%d").to_string())
                 .unwrap_or_else(|| commit.timestamp.to_string());
             let intent = commit.intent.as_deref().unwrap_or("(no intent)");
-            println!("  {:<35} last: {}  agent: {}  intent: \"{}\"",
-                file, time, commit.agent_id, intent);
+            println!(
+                "  {:<35} last: {}  agent: {}  intent: \"{}\"",
+                file, time, commit.agent_id, intent
+            );
         }
         println!();
     }
@@ -1051,8 +1136,18 @@ pub async fn context(args: ContextArgs, base: &std::path::Path) -> Result<()> {
             }
         };
 
-        println!("[{}] {} | {} | intent: \"{}\"", i + 1, time, commit.agent_id, intent);
-        println!("    git: {} | aigit: {}", git_ref, &commit.id[..commit.id.len().min(12)]);
+        println!(
+            "[{}] {} | {} | intent: \"{}\"",
+            i + 1,
+            time,
+            commit.agent_id,
+            intent
+        );
+        println!(
+            "    git: {} | aigit: {}",
+            git_ref,
+            &commit.id[..commit.id.len().min(12)]
+        );
         println!("    prompt: {}", prompt_snippet);
         println!();
     }
@@ -1093,9 +1188,13 @@ pub async fn conflicts(args: ConflictsArgs, base: &std::path::Path) -> Result<()
         }
         *count += 1;
 
-        let agents = artifact_agents.entry(row.artifact_path.clone()).or_default();
+        let agents = artifact_agents
+            .entry(row.artifact_path.clone())
+            .or_default();
         // Only record the first (most recent) intent per agent since rows are newest-first.
-        agents.entry(row.agent_id.clone()).or_insert_with(|| row.intent.clone());
+        agents
+            .entry(row.agent_id.clone())
+            .or_insert_with(|| row.intent.clone());
     }
 
     // Filter to files where more than one distinct agent has commits.
@@ -1145,7 +1244,7 @@ pub async fn hook(sub: HookCommands, base: &std::path::Path) -> Result<()> {
                 if !git_hooks_dir.exists() {
                     fs::create_dir_all(&git_hooks_dir)?;
                 }
-                
+
                 // Create post-commit hook that calls 'aigit hook run post-commit'
                 let hook_content = r#"#!/bin/bash
 set -e
@@ -1158,7 +1257,7 @@ else
     cargo run --manifest-path "$REPO_ROOT/Cargo.toml" --quiet -- hook run post-commit --git-hash "$GIT_HASH"
 fi
 "#;
-                
+
                 let hook_path = git_hooks_dir.join("post-commit");
                 fs::write(&hook_path, hook_content)?;
                 #[cfg(unix)]
@@ -1166,7 +1265,7 @@ fi
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
                 }
-                
+
                 println!("Installed post-commit hook at: {}", hook_path.display());
                 println!("Run 'aigit hook install --git' in each repo to enable auto-tracking.");
             } else {
@@ -1175,14 +1274,14 @@ fi
                 if !hooks_dir.exists() {
                     fs::create_dir_all(&hooks_dir)?;
                 }
-                
+
                 let hook_content = r#"#!/bin/bash
 # aigit auto‑tracking hook
 # This hook runs aigit commit automatically when Git commits happen
 echo "aigit hook: tracking Git commit"
 # Add your aigit commit logic here
 "#;
-                
+
                 let hook_path = hooks_dir.join("pre-commit");
                 fs::write(&hook_path, hook_content)?;
                 #[cfg(unix)]
@@ -1190,7 +1289,7 @@ echo "aigit hook: tracking Git commit"
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
                 }
-                
+
                 println!("Created example hook at: {}", hook_path.display());
                 println!("Note: Full hook automation is Phase 1. Manual integration required.");
             }
@@ -1247,8 +1346,7 @@ echo "aigit hook: tracking Git commit"
                     // get_parent_timestamp() reads HEAD~1 of the current HEAD (which is the
                     // just-made git commit), so it returns the timestamp of the commit that was
                     // HEAD *before* the git commit ran — exactly bounding our search window.
-                    let since_ms = crate::git::get_parent_timestamp(base)?
-                        .unwrap_or(0) * 1000;
+                    let since_ms = crate::git::get_parent_timestamp(base)?.unwrap_or(0) * 1000;
 
                     // Case 1: aigit commits stored with git_hash IS NULL (prompt was captured
                     //         before any git HEAD existed, or aigit commit had no git context).
@@ -1277,8 +1375,11 @@ echo "aigit hook: tracking Git commit"
                         for commit in &unlinked {
                             db.set_git_hash(&commit.id, &git_hash).await?;
                         }
-                        println!("aigit: linked {} commit(s) to Git hash {}",
-                            unlinked.len(), &git_hash[..git_hash.len().min(12)]);
+                        println!(
+                            "aigit: linked {} commit(s) to Git hash {}",
+                            unlinked.len(),
+                            &git_hash[..git_hash.len().min(12)]
+                        );
                     } else {
                         // Fallback: record the git commit message as a new aigit commit
                         let msg = crate::git::get_head_commit_message(base)?.unwrap_or_default();
@@ -1294,8 +1395,11 @@ echo "aigit hook: tracking Git commit"
                             parent_ids: vec![],
                         };
                         let id = db.insert_commit(new_commit).await?;
-                        println!("aigit: recorded Git commit {} as aigit commit {}",
-                            &git_hash[..git_hash.len().min(12)], &id[..id.len().min(12)]);
+                        println!(
+                            "aigit: recorded Git commit {} as aigit commit {}",
+                            &git_hash[..git_hash.len().min(12)],
+                            &id[..id.len().min(12)]
+                        );
                     }
                 }
                 other => {
@@ -1488,7 +1592,19 @@ exit 0
         .or_insert(serde_json::json!([]))
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!("PostToolUse is not an array"))?;
-    if !post_arr.iter().any(|e| e.get("hooks").and_then(|h| h.as_array()).map(|h| h.iter().any(|x| x.get("command").and_then(|c| c.as_str()).map(|c| c.contains("aigit-post-tool")).unwrap_or(false))).unwrap_or(false)) {
+    if !post_arr.iter().any(|e| {
+        e.get("hooks")
+            .and_then(|h| h.as_array())
+            .map(|h| {
+                h.iter().any(|x| {
+                    x.get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c.contains("aigit-post-tool"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    }) {
         post_arr.push(post_hook_entry);
     }
 
@@ -1497,7 +1613,19 @@ exit 0
         .or_insert(serde_json::json!([]))
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!("PreToolUse is not an array"))?;
-    if !pre_arr.iter().any(|e| e.get("hooks").and_then(|h| h.as_array()).map(|h| h.iter().any(|x| x.get("command").and_then(|c| c.as_str()).map(|c| c.contains("aigit-pre-tool")).unwrap_or(false))).unwrap_or(false)) {
+    if !pre_arr.iter().any(|e| {
+        e.get("hooks")
+            .and_then(|h| h.as_array())
+            .map(|h| {
+                h.iter().any(|x| {
+                    x.get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c.contains("aigit-pre-tool"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    }) {
         pre_arr.push(pre_hook_entry);
     }
 
@@ -1533,7 +1661,14 @@ fn hook_uninstall_claude(base: &std::path::Path) -> Result<()> {
                         arr.retain(|e| {
                             !e.get("hooks")
                                 .and_then(|h| h.as_array())
-                                .map(|h| h.iter().any(|x| x.get("command").and_then(|c| c.as_str()).map(|c| c.contains("aigit-")).unwrap_or(false)))
+                                .map(|h| {
+                                    h.iter().any(|x| {
+                                        x.get("command")
+                                            .and_then(|c| c.as_str())
+                                            .map(|c| c.contains("aigit-"))
+                                            .unwrap_or(false)
+                                    })
+                                })
                                 .unwrap_or(false)
                         });
                     }
@@ -1573,7 +1708,9 @@ pub async fn conflict_check(args: ConflictCheckArgs, base: &std::path::Path) -> 
             break;
         }
         count += 1;
-        agents.entry(row.agent_id.clone()).or_insert_with(|| row.intent.clone());
+        agents
+            .entry(row.agent_id.clone())
+            .or_insert_with(|| row.intent.clone());
     }
 
     // If an agent filter is provided, remove the current agent so we only warn
@@ -1650,9 +1787,13 @@ pub async fn resolve(args: ResolveArgs, base: &std::path::Path) -> Result<()> {
     let target_id = agent_list[1].1.clone();
 
     if args.llm {
-        let source = db.get_commit_by_prefix(&source_id).await?
+        let source = db
+            .get_commit_by_prefix(&source_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Source commit not found: {}", source_id))?;
-        let target = db.get_commit_by_prefix(&target_id).await?
+        let target = db
+            .get_commit_by_prefix(&target_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Target commit not found: {}", target_id))?;
 
         let llm_config = crate::llm::load_llm_config(&aigit_dir)?;
@@ -1687,36 +1828,46 @@ Output only the merged content with no explanation, preamble, or markdown fences
         let artifact_path = args.output.clone().unwrap_or_else(|| args.path.clone());
         if args.output.is_some() {
             validate_write_path(&artifact_path, base)?;
-            std::fs::write(&artifact_path, &result)
-                .map_err(|e| anyhow::anyhow!("Failed to write merge output to '{}': {}", artifact_path, e))?;
+            std::fs::write(&artifact_path, &result).map_err(|e| {
+                anyhow::anyhow!("Failed to write merge output to '{}': {}", artifact_path, e)
+            })?;
             println!("LLM merge result written to: {}", artifact_path);
         } else {
             println!("{}", result);
         }
 
         // Record the resolution as a new aigit commit so log/blame/conflicts stay complete.
-        let new_id = db.insert_commit(db::NewCommit {
-            git_hash: None,
-            agent_id: "aigit-resolver".to_string(),
-            intent: Some("LLM-assisted merge of conflicting agent outputs".to_string()),
-            prompt,
-            model: llm_config.model.clone(),
-            parameters: "{}".to_string(),
-            output: result,
-            artifacts: vec![artifact_path],
-            parent_ids: vec![source_id, target_id],
-        }).await?;
-        println!("Resolution recorded: aigit commit {}", &new_id[..new_id.len().min(12)]);
+        let new_id = db
+            .insert_commit(db::NewCommit {
+                git_hash: None,
+                agent_id: "aigit-resolver".to_string(),
+                intent: Some("LLM-assisted merge of conflicting agent outputs".to_string()),
+                prompt,
+                model: llm_config.model.clone(),
+                parameters: "{}".to_string(),
+                output: result,
+                artifacts: vec![artifact_path],
+                parent_ids: vec![source_id, target_id],
+            })
+            .await?;
+        println!(
+            "Resolution recorded: aigit commit {}",
+            &new_id[..new_id.len().min(12)]
+        );
 
         return Ok(());
     }
 
     // Textual fallback — delegate to merge (no auto-commit; conflict markers still present).
-    merge(MergeArgs {
-        source: source_id,
-        target: target_id,
-        llm: false,
-        output: args.output,
-        quiet: false,
-    }, base).await
+    merge(
+        MergeArgs {
+            source: source_id,
+            target: target_id,
+            llm: false,
+            output: args.output,
+            quiet: false,
+        },
+        base,
+    )
+    .await
 }

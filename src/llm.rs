@@ -48,25 +48,42 @@ pub fn load_llm_config(aigit_dir: &Path) -> Result<LlmConfig> {
         let contents = std::fs::read_to_string(&config_path)?;
         if let Ok(cfg) = toml::from_str::<ConfigFile>(&contents) {
             if let Some(llm) = cfg.llm {
-                if let Some(p) = llm.provider { provider = p; }
-                if let Some(m) = llm.model { model = m; }
-                if let Some(k) = llm.api_key { api_key = Some(k); }
+                if let Some(p) = llm.provider {
+                    provider = p;
+                }
+                if let Some(m) = llm.model {
+                    model = m;
+                }
+                if let Some(k) = llm.api_key {
+                    api_key = Some(k);
+                }
                 base_url = llm.base_url;
             }
         }
     }
 
     // Env vars override config file (higher precedence)
-    if let Ok(p) = std::env::var("AIGIT_LLM_PROVIDER") { provider = p; }
-    if let Ok(m) = std::env::var("AIGIT_LLM_MODEL") { model = m; }
-    if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") { api_key = Some(k); }
+    if let Ok(p) = std::env::var("AIGIT_LLM_PROVIDER") {
+        provider = p;
+    }
+    if let Ok(m) = std::env::var("AIGIT_LLM_MODEL") {
+        model = m;
+    }
+    if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
+        api_key = Some(k);
+    }
 
     // For ollama, default base_url if not set
     if provider == "ollama" && base_url.is_none() {
         base_url = Some("http://localhost:11434".to_string());
     }
 
-    Ok(LlmConfig { provider, model, api_key, base_url })
+    Ok(LlmConfig {
+        provider,
+        model,
+        api_key,
+        base_url,
+    })
 }
 
 // ── Anthropic message types ────────────────────────────────────────────────
@@ -117,7 +134,7 @@ struct OllamaResponse {
 /// - Ollama: must be loopback (localhost / 127.0.0.1 / ::1) unless https://.
 fn validate_base_url(url: &str, provider: &str) -> Result<()> {
     let is_https = url.starts_with("https://");
-    let is_http  = url.starts_with("http://");
+    let is_http = url.starts_with("http://");
     if !is_https && !is_http {
         anyhow::bail!("LLM base_url '{}' must start with https:// or http://", url);
     }
@@ -177,7 +194,10 @@ async fn call_anthropic(config: &LlmConfig, prompt: &str) -> Result<String> {
     let body = AnthropicRequest {
         model: &config.model,
         max_tokens: 8192,
-        messages: vec![AnthropicMessage { role: "user", content: prompt }],
+        messages: vec![AnthropicMessage {
+            role: "user",
+            content: prompt,
+        }],
     };
 
     let client = reqwest::Client::builder()
