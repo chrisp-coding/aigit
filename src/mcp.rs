@@ -525,13 +525,13 @@ fn parse_line_range(s: &str) -> (usize, usize) {
 fn install_mcp_json(base: &Path) -> Result<()> {
     let mcp_path = base.join(".mcp.json");
 
-    // Determine the aigit command (prefer binary, fall back to cargo run)
+    // Determine the aigit command (prefer binary, fall back to cargo run).
+    // Claude Code expects the entry under "mcpServers" with just "command" and "args".
     let aigit_cmd = if which_aigit() {
-        json!({ "type": "stdio", "command": "aigit", "args": ["mcp"] })
+        json!({ "command": "aigit", "args": ["mcp"] })
     } else {
         let manifest = base.join("Cargo.toml");
         json!({
-            "type": "stdio",
             "command": "cargo",
             "args": ["run", "--manifest-path", manifest.to_string_lossy(), "--quiet", "--", "mcp"]
         })
@@ -547,10 +547,10 @@ fn install_mcp_json(base: &Path) -> Result<()> {
     existing
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!(".mcp.json root is not an object"))?
-        .entry("servers")
+        .entry("mcpServers")
         .or_insert(json!({}))
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("servers is not an object"))?
+        .ok_or_else(|| anyhow::anyhow!("mcpServers is not an object"))?
         .insert("aigit".to_string(), aigit_cmd);
 
     std::fs::write(&mcp_path, serde_json::to_string_pretty(&existing)?)?;
