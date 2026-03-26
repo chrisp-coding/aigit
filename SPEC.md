@@ -157,12 +157,23 @@ aigit mcp [--install]                      # Start stdio JSON-RPC 2.0 MCP server
 ### Phase 2 – Claude Code integration ✅ Complete
 - [x] Claude Code PostToolUse hook – auto‑calls `aigit commit` after file writes (`hook install --claude`).
 - [x] Claude Code PreToolUse hook – warns when another agent recently touched the target file (`hook install --claude`).
-- [x] MCP server (`aigit mcp`) exposing 7 tools over stdio JSON-RPC 2.0; `--install` writes `.mcp.json`.
+- [x] MCP server (`aigit mcp`) exposing 7 tools over stdio JSON-RPC 2.0; `--install` writes `.mcp.json` with the `"mcpServers"` key required by Claude Code for automatic discovery.
 - [x] `aigit conflicts` command: files where >1 agent has recent commits (`--window N`, default 10).
 - [x] LLM‑assisted merge (`merge --llm`) via Anthropic API or local Ollama (`src/llm.rs`).
-- [x] `aigit resolve <file>` – per‑file LLM merge invocation; `--output` and `--llm` flags supported.
+- [x] `aigit resolve <file>` – per‑file LLM merge invocation; `--output` and `--llm` flags supported. With `--llm`, records the merged result as a new aigit commit (`agent_id = "aigit-resolver"`, both source and target as parents).
 - [x] `aigit conflict-check <file>` – exits 1 on conflict; used by PreToolUse hook.
 - **Deliverable**: Claude Code agents auto‑track work and detect/resolve conflicts.
+
+### Phase 2.5 – Security hardening ✅ Complete
+- [x] `validate_base_url()` – SSRF prevention for LLM HTTP calls (HTTPS required for Anthropic; loopback-only HTTP for Ollama).
+- [x] `validate_write_path()` – path traversal guard on all `--output` writes (`..` components and out-of-root absolute paths rejected).
+- [x] `validate_mcp_path()` – path traversal guard on MCP tool file-path arguments.
+- [x] Prompt injection mitigation – agent content wrapped in data-boundary markers in LLM merge/resolve prompts.
+- [x] `strip_ansi()` – ANSI escape sequences stripped from all LLM output before write/print.
+- [x] Hook script hardening – `set -euo pipefail` and `$FILE` validation in generated `.claude/hooks/` scripts.
+- [x] File permission hardening – `config.toml` and `db.sqlite` created with `0o600` on Unix.
+- [x] `DATABASE_URL` pinned in `setup.sh` to prevent accidental targeting of a remote database.
+- [x] 10 MB cap on MCP message size to prevent memory exhaustion.
 
 ### Phase 3 – Semantic features (current focus)
 - [ ] Embedding generation (local ONNX model, `all‑MiniLM‑L6‑v2`).

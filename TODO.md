@@ -53,7 +53,20 @@ and detect/resolve conflicts when multiple agents touch the same files.
   - Sends both versions + both agents' prompts/intents to an LLM
   - Returns a merged version that reconciles the intents
 - [x] Add `aigit resolve <file>` command that invokes LLM merge for a specific file
+  - `resolve --llm` auto-commits the result as `agent_id = "aigit-resolver"` so log/blame/conflicts stay accurate
 - [x] Add `aigit conflict-check <file>` command — exits 1 if conflict detected; used by PreToolUse hook
+- [x] Fix `.mcp.json` to use `"mcpServers"` key (was `"servers"`) for Claude Code automatic discovery
+
+### 3e: Security Hardening
+
+- [x] SSRF prevention — `validate_base_url()` enforces `https://` for Anthropic; loopback-only `http://` for Ollama
+- [x] Path traversal guard — `validate_write_path()` on all `--output` writes; `validate_mcp_path()` on MCP file-path arguments
+- [x] Prompt injection mitigation — agent content wrapped in data-boundary markers in LLM merge/resolve prompts
+- [x] ANSI escape stripping — `strip_ansi()` applied to all LLM output before write/print
+- [x] Hook hardening — `set -euo pipefail` and `$FILE` path validation in generated `.claude/hooks/` scripts
+- [x] File permission hardening — `config.toml` and `db.sqlite` created `0o600` on Unix
+- [x] `DATABASE_URL` pinned in `setup.sh` to prevent accidental use of an ambient remote database URL
+- [x] 10 MB cap on MCP message size to prevent memory exhaustion
 
 ### 3d: Agent Identity for Claude Code
 

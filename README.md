@@ -108,26 +108,29 @@ aigit status
 | `init`, `commit`, `log`, `show` | ✅ Implemented |
 | Text diff (`diff`) | ✅ Implemented |
 | Text merge with conflict markers (`merge`) | ✅ Implemented (`--output <path>` writes result to file) |
+| LLM-assisted merge (`merge --llm`) | ✅ Implemented (Anthropic API or local Ollama via `src/llm.rs`) |
+| Per-file LLM conflict resolution (`resolve`) | ✅ Implemented (`--llm` auto-commits result as `aigit-resolver`) |
+| Conflict check with exit code (`conflict-check`) | ✅ Implemented (exits 1 on conflict; used by PreToolUse hook) |
 | Git blame integration (`blame`) | ✅ Implemented |
 | Agent management (`agents`) | ✅ Implemented |
 | Agent-scoped branches (`branch`) | ✅ Implemented |
 | Working tree coverage (`status`) | ✅ Implemented |
 | Context command for AI agents (`context`) | ✅ Implemented |
-| Git hook installation (`hook`) | ✅ Implemented (`hook install --git` installs post-commit; retrospective linking) |
+| Git hook installation (`hook`) | ✅ Implemented (`hook install --git` installs post-commit; `hook install --claude` installs Claude Code hooks) |
 | Conflict detection (`conflicts`) | ✅ Implemented (`--window N` limits commit scan depth) |
+| Claude Code auto-tracking hooks | ✅ Implemented (`hook install --claude` writes PostToolUse/PreToolUse hooks) |
+| MCP server for agent queries | ✅ Implemented (`aigit mcp`; `--install` writes `.mcp.json`) |
 | Semantic diff (`diff --semantic`) | 🔄 Phase 4 — falls back to textual diff with a warning |
-| LLM-assisted merge (`merge --llm`) | 🔄 Phase 3 — needs LLM integration |
-| MCP server for agent queries | 🔄 Phase 3 |
-| Claude Code auto-tracking hooks | 🔄 Phase 3 |
 | Embeddings + semantic search | 🔄 Phase 4 |
 
 ## Roadmap
 
 - **Phase 1** ✅ — Core tracking: `init`, `commit`, `log`, `show`, `diff`, `blame`, `merge`, `context`
 - **Phase 2** ✅ — Git integration: hook scripts, blame wiring, branch management, status
-- **Phase 3** 🔄 — Claude Code integration: auto-tracking hooks, MCP server, conflict detection, LLM merge
-- **Phase 4** 🔄 — Semantic features: embeddings, similarity search, semantic diff
-- **Phase 5** 🔄 — Polish: crates.io publish, VS Code extension, cloud sync
+- **Phase 2 (Claude Code)** ✅ — Auto-tracking hooks, MCP server, conflict detection, LLM merge, `resolve`, `conflict-check`
+- **Phase 2.5** ✅ — Security hardening: SSRF prevention, path traversal guards, prompt injection mitigation, hook hardening, file permissions
+- **Phase 3** 🔄 — Semantic features: embeddings (`all-MiniLM-L6-v2`), similarity search, semantic diff
+- **Phase 4** 🔄 — Polish: crates.io publish, VS Code extension, cloud sync
 
 ## Development
 

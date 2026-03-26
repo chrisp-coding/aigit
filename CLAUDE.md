@@ -5,7 +5,7 @@
 
 **Core value**: Regular Git tracks *what* changed; aigit tracks **why** it changed (the prompt/intent) and **who** changed it (which agent/persona).
 
-## Current Status (Phase 2 Complete – Phase 3 In Progress)
+## Current Status (Phase 2 + Security Hardening Complete – Phase 3 In Progress)
 **Implemented** (Phase 0 and Phase 1):
 - ✅ Project skeleton (`Cargo.toml`, `src/`, `migrations/`, `tests/`)
 - ✅ SQLite schema (see `migrations/`)
@@ -31,10 +31,11 @@
 
 **Implemented** (Phase 2):
 - ✅ `conflict-check` command – checks if a file was recently touched by other agents; exits 1 + prints error if conflict detected; `--agent` and `--window N` flags supported
-- ✅ `resolve` command – finds the two most recent conflicting commits for a file and merges them; textual by default, LLM-assisted with `--llm`; `--output <path>` writes result to a file
-- ✅ `mcp` subcommand – starts a stdio JSON-RPC 2.0 MCP server exposing 7 tools (`aigit_log`, `aigit_show`, `aigit_diff`, `aigit_blame`, `aigit_context`, `aigit_conflict_check`, `aigit_merge`); `--install` writes `.mcp.json` for automatic discovery
-- ✅ `src/llm.rs` – LLM config loading and HTTP calls for Anthropic and Ollama; config via `.aigit/config.toml [llm]` section; `ANTHROPIC_API_KEY`, `AIGIT_LLM_PROVIDER`, `AIGIT_LLM_MODEL` env vars override config
-- ✅ `src/mcp.rs` – stdio JSON-RPC 2.0 MCP server implementation
+- ✅ `resolve` command – finds the two most recent conflicting commits for a file and merges them; textual by default, LLM-assisted with `--llm`; `--output <path>` writes result to a file; `--llm` auto-commits the result with `agent_id = "aigit-resolver"` and both source/target as parents
+- ✅ `mcp` subcommand – starts a stdio JSON-RPC 2.0 MCP server exposing 7 tools (`aigit_log`, `aigit_show`, `aigit_diff`, `aigit_blame`, `aigit_context`, `aigit_conflict_check`, `aigit_merge`); `--install` writes `.mcp.json` using the `"mcpServers"` key required by Claude Code for automatic discovery
+- ✅ `src/llm.rs` – LLM config loading and HTTP calls for Anthropic and Ollama; `validate_base_url()` prevents SSRF; config via `.aigit/config.toml [llm]` section; `ANTHROPIC_API_KEY`, `AIGIT_LLM_PROVIDER`, `AIGIT_LLM_MODEL` env vars override config
+- ✅ `src/mcp.rs` – stdio JSON-RPC 2.0 MCP server implementation; `validate_mcp_path()` rejects path traversal in tool arguments; 10 MB per-message cap
+- ✅ Security hardening – `validate_write_path()` path traversal guard on all `--output` writes; `strip_ansi()` on LLM output; prompt injection data-boundary markers; hook scripts use `set -euo pipefail` and validate `$FILE`; `config.toml` and `db.sqlite` created `0o600` on Unix; `DATABASE_URL` pinned in `setup.sh`
 
 **Partially implemented / stubbed** (Phase 3):
 - 🔄 Semantic diffing – `--semantic` flag prints a warning and falls back to textual diff; embeddings table exists but is never populated (full implementation requires Phase 3 embeddings model)
@@ -217,8 +218,17 @@ cargo run -- mcp --install                # write .mcp.json for automatic discov
 - **Batch git-hash lookup**: Use `get_commits_by_git_hashes(&[String])` instead of calling `get_commit_by_git_hash` in a loop; the former uses a single `IN (...)` query.
 - **LLM config**: `src/llm.rs` reads `.aigit/config.toml` `[llm]` section. Env vars `ANTHROPIC_API_KEY`, `AIGIT_LLM_PROVIDER`, and `AIGIT_LLM_MODEL` override file config. Provider choices: `anthropic` or `ollama` (base URL defaults to `http://localhost:11434`).
 - **MCP server**: `src/mcp.rs` speaks JSON-RPC 2.0 over stdio. The 7 exposed tools are `aigit_log`, `aigit_show`, `aigit_diff`, `aigit_blame`, `aigit_context`, `aigit_conflict_check`, and `aigit_merge`. Run `aigit mcp --install` once to write `.mcp.json` so Claude Code discovers the server automatically.
+- **`.mcp.json` key**: Claude Code requires the server entry under `"mcpServers"` (not `"servers"`). `install_mcp_json()` uses `"mcpServers"`. If you have an older `.mcp.json` with a `"servers"` key, re-run `aigit mcp --install` to migrate it.
 - **Claude Code hooks**: `hook install --claude` writes shell scripts to `.claude/hooks/` and patches `.claude/settings.json`. Hook env vars: `AIGIT_AGENT` (default: `claude-code`), `AIGIT_MODEL` (default: `claude-sonnet-4-6`), `AIGIT_INTENT`.
 - **conflict-check exit code**: `aigit conflict-check <file>` exits 0 when clean, 1 when a conflict is detected. The PreToolUse hook relies on this exit code to block or warn.
+- **resolve auto-commit**: `aigit resolve <file> --llm` records the merged result as a new aigit commit with `agent_id = "aigit-resolver"` and both source and target IDs as parents. This keeps `log`, `blame`, and `conflicts` accurate after a resolution. The textual (non-LLM) path delegates to `merge` and does not auto-commit.
+- **Security — SSRF**: `validate_base_url()` in `src/llm.rs` enforces `https://` for Anthropic and loopback-only `http://` for Ollama. Any other `base_url` in config is rejected before the HTTP client is created.
+- **Security — path traversal**: `validate_write_path()` in `src/cli.rs` rejects `..` components and absolute paths outside the project root on every `--output` write. `validate_mcp_path()` in `src/mcp.rs` rejects absolute paths and `..` in MCP tool file-path arguments.
+- **Security — prompt injection**: LLM merge/resolve prompts wrap agent content in explicit data-boundary markers (`=== BEGIN Agent content … ===` / `=== END Agent content ===`) so agent output is treated as data, not instructions.
+- **Security — ANSI stripping**: `strip_ansi()` in `src/cli.rs` strips CSI escape sequences from all LLM output before it is written to disk or printed.
+- **Security — hook hardening**: Generated `.claude/hooks/` scripts use `set -euo pipefail` and validate `$FILE` (extracted from the JSON input) against null bytes, newlines, and `..` before passing it to aigit.
+- **Security — file permissions**: `init` sets `0o600` on `config.toml` and `db.sqlite` on Unix. `setup.sh` pins `DATABASE_URL="sqlite:.aigit/db.sqlite"` on `sqlx` invocations to prevent accidental use of an ambient `DATABASE_URL`.
+- **MCP message cap**: The MCP server rejects any single JSON-RPC message exceeding 10 MB (`MAX_LINE_BYTES` in `src/mcp.rs`) with a JSON-RPC `-32700` error before parsing, preventing memory exhaustion.
 
 ## Testing with MiroFish Simulation
 We plan to reuse the MiroFish container (already running) to simulate multi‑agent collaboration:
@@ -268,4 +278,4 @@ cargo run -- log
 - **Workspace**: `/home/chris/projects/aigit`
 
 ---
-*Updated: 2026‑03‑25 (Phase 2 complete — `conflict-check`, `resolve`, `mcp` commands added; `hook install --claude` implemented; `merge --llm` now makes real LLM calls via `src/llm.rs`; MCP server in `src/mcp.rs` exposes 7 tools over stdio JSON-RPC 2.0)*
+*Updated: 2026‑03‑25 (Phase 2 complete — `conflict-check`, `resolve`, `mcp` commands added; `hook install --claude` implemented; `merge --llm` now makes real LLM calls via `src/llm.rs`; MCP server in `src/mcp.rs` exposes 7 tools over stdio JSON-RPC 2.0; security hardening: SSRF prevention, path traversal guards, prompt injection mitigation, ANSI stripping, hook hardening, file permissions, MCP message cap; `resolve --llm` auto-commits result as `aigit-resolver`; `.mcp.json` now uses `"mcpServers"` key)*
