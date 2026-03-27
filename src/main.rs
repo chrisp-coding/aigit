@@ -50,6 +50,8 @@ enum Commands {
     ConflictCheck(cli::ConflictCheckArgs),
     /// Resolve conflicts for a file using LLM merge
     Resolve(cli::ResolveArgs),
+    /// Intercept a Claude Code Write/Edit event, auto-merge with existing content via LLM
+    MergeContent(cli::MergeContentArgs),
     /// Start the aigit MCP server (stdio JSON-RPC 2.0)
     Mcp(cli::McpArgs),
 }
@@ -76,6 +78,7 @@ async fn main() -> Result<()> {
         Commands::Conflicts(args) => cli::conflicts(args, base).await,
         Commands::ConflictCheck(args) => cli::conflict_check(args, base).await,
         Commands::Resolve(args) => cli::resolve(args, base).await,
+        Commands::MergeContent(args) => cli::merge_content(args, base).await,
         Commands::Mcp(args) => crate::mcp::run(args, base).await,
     }
 }

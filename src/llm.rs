@@ -168,10 +168,94 @@ pub async fn call_llm(config: &LlmConfig, prompt: &str) -> Result<String> {
     match config.provider.as_str() {
         "anthropic" => call_anthropic(config, prompt).await,
         "ollama" => call_ollama(config, prompt).await,
+        "claude-cli" => call_claude_cli(prompt).await,
         other => anyhow::bail!(
-            "Unknown LLM provider '{}'. Set provider = \"anthropic\" or \"ollama\" in .aigit/config.toml.",
+            "Unknown LLM provider '{}'. Set provider = \"anthropic\", \"ollama\", or \"claude-cli\" in .aigit/config.toml.",
             other
         ),
+    }
+}
+
+/// Try to call the `claude` CLI if it is in PATH; return None if unavailable.
+/// Used by merge-content to prefer Claude Code's own auth over a separately
+/// configured API key.
+pub async fn try_claude_cli(prompt: &str) -> Option<String> {
+    // Only attempt if `claude` is in PATH.
+    if which::which("claude").is_err() {
+        return None;
+    }
+    call_claude_cli(prompt).await.ok()
+}
+
+/// Result of an intent conflict check.
+pub struct IntentConflictCheck {
+    pub conflict: bool,
+    pub reason: String,
+}
+
+/// Ask the LLM whether two agent intents genuinely conflict (i.e. satisfying one
+/// requires compromising the other). Uses `claude` CLI if available, otherwise
+/// falls back to the aigit-configured LLM.
+pub async fn check_intent_conflict(
+    agent_a: &str,
+    intent_a: &str,
+    agent_b: &str,
+    intent_b: &str,
+    config: Option<&LlmConfig>,
+) -> Result<IntentConflictCheck> {
+    let prompt = format!(
+        "Two AI agents edited the same file with different intents. \
+         Determine whether these intents genuinely conflict — meaning satisfying one \
+         requires compromising the other — or whether they are compatible/orthogonal \
+         and could both be satisfied in a single version.\n\
+         \n\
+         Agent A ({}): \"{}\"\n\
+         Agent B ({}): \"{}\"\n\
+         \n\
+         Respond with valid JSON only, no explanation outside the JSON:\n\
+         {{\"conflict\": true/false, \"reason\": \"one sentence explanation\"}}",
+        agent_a, intent_a, agent_b, intent_b,
+    );
+
+    let raw = match try_claude_cli(&prompt).await {
+        Some(output) => output,
+        None => match config {
+            Some(cfg) => call_llm(cfg, &prompt).await?,
+            None => anyhow::bail!(
+                "No LLM available for intent conflict check. \
+                 Install the claude CLI or configure .aigit/config.toml [llm]."
+            ),
+        },
+    };
+
+    // Extract the JSON object from the response — the LLM may wrap it in prose.
+    let json_str = extract_json_object(&raw).unwrap_or(raw.trim().to_string());
+
+    let parsed: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+        anyhow::anyhow!(
+            "Intent conflict check returned non-JSON response: {} (raw: {})",
+            e,
+            json_str.chars().take(200).collect::<String>()
+        )
+    })?;
+
+    let conflict = parsed["conflict"].as_bool().unwrap_or(false);
+    let reason = parsed["reason"]
+        .as_str()
+        .unwrap_or("no reason provided")
+        .to_string();
+
+    Ok(IntentConflictCheck { conflict, reason })
+}
+
+/// Extract the first `{...}` JSON object from a string.
+fn extract_json_object(s: &str) -> Option<String> {
+    let start = s.find('{')?;
+    let end = s.rfind('}')?;
+    if end >= start {
+        Some(s[start..=end].to_string())
+    } else {
+        None
     }
 }
 
@@ -258,4 +342,20 @@ async fn call_ollama(config: &LlmConfig, prompt: &str) -> Result<String> {
 
     let parsed: OllamaResponse = resp.json().await?;
     Ok(parsed.response)
+}
+
+async fn call_claude_cli(prompt: &str) -> Result<String> {
+    let output = tokio::process::Command::new("claude")
+        .args(["--print", prompt])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to invoke 'claude' CLI: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let truncated: String = stderr.chars().take(256).collect();
+        anyhow::bail!("claude CLI exited non-zero: {}", truncated);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
